@@ -1,0 +1,3960 @@
+--[[
+========================================================
+                    KYZEN PERKS
+              SHERIFF MYSTERY TEST
+                       V8.0
+========================================================
+
+V8.0 CHANGELOG
+--------------------------------------------------------
+[FIX] First Sheriff is remembered per round
+[FIX] First Sheriff does NOT become Hero after respawn
+[FIX] Sheriff death/leave can make dropped gun HERO-ELIGIBLE
+[FIX] Innocent picking eligible dropped Sheriff gun = HERO
+[FIX] Hero is yellow
+[FIX] Sheriff is blue
+[FIX] Murderer is red
+[FIX] Innocent is green
+[FIX] ESP resets on round changes
+[FIX] ESP resets on role changes
+[FIX] ESP ON/OFF
+[FIX] Scrolling player list
+[FIX] Auto Pick Gun improved
+[FIX] Auto Pick targets last Sheriff/Hero dropped gun
+[FIX] Auto Pick searches Part / MeshPart / Model / Tool
+[FIX] Green-particle dropped gun detection
+[FIX] Returns player to original position
+[ADD] Version display: V8.0
+[ADD] System status display
+[ADD] Animated UI
+[ADD] Draggable main window
+[ADD] Draggable floating button
+[ADD] Mobile/PC friendly sizing
+
+IMPORTANT
+--------------------------------------------------------
+This is intended for your own private test environment.
+
+A LocalScript cannot directly force a server-authoritative
+Tool into Backpack or force a server role change.
+
+The Auto Pick system physically moves the character to
+the detected pickup and allows the game's legitimate
+Touched/pickup system to handle the actual pickup.
+
+If your server pickup system uses Touched, it can work
+normally. If the server requires a RemoteEvent or other
+server-only validation, that server system must accept
+the pickup.
+========================================================
+]]
+
+--------------------------------------------------------
+-- SERVICES
+--------------------------------------------------------
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+--------------------------------------------------------
+-- CONFIG
+--------------------------------------------------------
+
+local CONFIG = {
+
+	VERSION = "V8.0",
+
+	ESP_ENABLED = true,
+
+	AUTO_PICK_ENABLED = false,
+
+	ESP_REFRESH = 1,
+
+	GUN_SCAN_REFRESH = 0.15,
+
+	TELEPORT_HEIGHT = 2.5,
+
+	RETURN_DELAY = 0.15,
+
+	PICKUP_WAIT = 1.25,
+
+	MAX_PICK_DISTANCE = 5000,
+
+	UI = {
+		RED = Color3.fromRGB(220, 45, 55),
+		BLUE = Color3.fromRGB(50, 105, 255),
+
+		DARK = Color3.fromRGB(12, 14, 18),
+		DARK2 = Color3.fromRGB(18, 21, 27),
+
+		PANEL = Color3.fromRGB(22, 25, 31),
+
+		WHITE = Color3.fromRGB(245, 245, 248),
+		GREY = Color3.fromRGB(145, 150, 160),
+
+		STROKE = Color3.fromRGB(4, 5, 7),
+	},
+
+	GUN_WORDS = {
+		"gun",
+		"pistol",
+		"revolver",
+		"handgun",
+		"deagle",
+		"firearm",
+		"blaster",
+		"weapon",
+		"sheriff",
+	},
+
+	KNIFE_WORDS = {
+		"knife",
+		"blade",
+		"dagger",
+		"sword",
+		"murder",
+		"murderer",
+	},
+
+	ROLE_ATTRIBUTE_NAMES = {
+		"Role",
+		"PlayerRole",
+		"CurrentRole",
+		"RoleName",
+		"GameRole",
+		"RoundRole",
+		"TeamRole",
+	},
+
+	ROUND_ATTRIBUTE_NAMES = {
+		"RoundId",
+		"Round",
+		"RoundNumber",
+		"CurrentRound",
+		"GameRound",
+	},
+
+	STATE_ATTRIBUTE_NAMES = {
+		"RoundState",
+		"GameState",
+		"State",
+		"Status",
+	},
+}
+
+--------------------------------------------------------
+-- STATE
+--------------------------------------------------------
+
+local ESPData = {}
+
+local PreviousRoles = {}
+
+local FirstSheriff = nil
+local FirstSheriffUserId = nil
+
+local FirstSheriffAlive = false
+local FirstSheriffLeft = false
+
+local EligibleHeroGun = nil
+local EligibleHeroGunPosition = nil
+
+local LastGunOwner = nil
+local LastGunOwnerPosition = nil
+
+local CurrentRoundSignature = nil
+local CurrentRoundState = nil
+
+local AutoPickEnabled = false
+
+local MainGui
+local MainFrame
+local ToggleButton
+
+local ESPPage
+local FarmPage
+
+local ESPButton
+local FarmButton
+
+local ESPStatusLabel
+local FarmStatusLabel
+local VersionLabel
+local SystemLabel
+
+local PlayerList
+
+local AutoPickSwitch
+local AutoPickKnob
+
+local MainOpen = true
+
+local Connections = {}
+
+--------------------------------------------------------
+-- UTILITY
+--------------------------------------------------------
+
+local function disconnectConnection(connection)
+	if connection then
+		pcall(function()
+			connection:Disconnect()
+		end)
+	end
+end
+
+local function clearConnections()
+	for _, connection in ipairs(Connections) do
+		disconnectConnection(connection)
+	end
+
+	table.clear(Connections)
+end
+
+local function contains(text, words)
+	text = string.lower(tostring(text or ""))
+
+	for _, word in ipairs(words) do
+		if string.find(text, string.lower(word), 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function getRoot(character)
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChild("HumanoidRootPart")
+		or character:FindFirstChild("Torso")
+		or character:FindFirstChild("UpperTorso")
+end
+
+local function getHumanoid(character)
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getObjectPosition(object)
+	if not object then
+		return nil
+	end
+
+	if object:IsA("BasePart") then
+		return object.Position
+	end
+
+	if object:IsA("Attachment") then
+		return object.WorldPosition
+	end
+
+	if object:IsA("Model") then
+		local primary = object.PrimaryPart
+
+		if primary then
+			return primary.Position
+		end
+
+		local root = object:FindFirstChildWhichIsA("BasePart", true)
+
+		if root then
+			return root.Position
+		end
+	end
+
+	return nil
+end
+
+local function getCharacterPosition(player)
+	if not player.Character then
+		return nil
+	end
+
+	local root = getRoot(player.Character)
+
+	if root then
+		return root.Position
+	end
+
+	return nil
+end
+
+--------------------------------------------------------
+-- ROLE NORMALIZATION
+--------------------------------------------------------
+
+local function normalizeRole(role)
+	if not role then
+		return nil
+	end
+
+	role = string.lower(tostring(role))
+
+	if role == "murder"
+		or role == "murderer"
+		or role == "killer"
+	then
+		return "Murderer"
+	end
+
+	if role == "sheriff"
+		or role == "cop"
+	then
+		return "Sheriff"
+	end
+
+	if role == "hero" then
+		return "Hero"
+	end
+
+	if role == "innocent"
+		or role == "civilian"
+		or role == "survivor"
+	then
+		return "Innocent"
+	end
+
+	return nil
+end
+
+--------------------------------------------------------
+-- ROLE ATTRIBUTE
+--------------------------------------------------------
+
+local function getRoleAttribute(player)
+	if not player then
+		return nil
+	end
+
+	for _, attributeName in ipairs(CONFIG.ROLE_ATTRIBUTE_NAMES) do
+		local value = player:GetAttribute(attributeName)
+
+		if value ~= nil then
+			local normalized = normalizeRole(value)
+
+			if normalized then
+				return normalized
+			end
+		end
+	end
+
+	if player.Character then
+		for _, attributeName in ipairs(CONFIG.ROLE_ATTRIBUTE_NAMES) do
+			local value = player.Character:GetAttribute(attributeName)
+
+			if value ~= nil then
+				local normalized = normalizeRole(value)
+
+				if normalized then
+					return normalized
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+--------------------------------------------------------
+-- TOOL SEARCH
+--------------------------------------------------------
+
+local function findToolInContainer(container, words)
+	if not container then
+		return nil
+	end
+
+	for _, object in ipairs(container:GetChildren()) do
+		if object:IsA("Tool") then
+			if contains(object.Name, words) then
+				return object
+			end
+		end
+	end
+
+	return nil
+end
+
+local function playerHasKnife(player)
+	if not player then
+		return false
+	end
+
+	local backpack = player:FindFirstChildOfClass("Backpack")
+
+	if backpack and findToolInContainer(backpack, CONFIG.KNIFE_WORDS) then
+		return true
+	end
+
+	if player.Character and findToolInContainer(player.Character, CONFIG.KNIFE_WORDS) then
+		return true
+	end
+
+	return false
+end
+
+local function playerHasGun(player)
+	if not player then
+		return false
+	end
+
+	local backpack = player:FindFirstChildOfClass("Backpack")
+
+	if backpack and findToolInContainer(backpack, CONFIG.GUN_WORDS) then
+		return true
+	end
+
+	if player.Character and findToolInContainer(player.Character, CONFIG.GUN_WORDS) then
+		return true
+	end
+
+	return false
+end
+
+--------------------------------------------------------
+-- ROLE DETECTION
+--------------------------------------------------------
+
+local function detectRole(player)
+	if not player then
+		return "Innocent"
+	end
+
+	----------------------------------------------------
+	-- SERVER ROLE ATTRIBUTE HAS PRIORITY
+	----------------------------------------------------
+
+	local serverRole = getRoleAttribute(player)
+
+	if serverRole then
+
+		-- If server explicitly says Hero,
+		-- never downgrade to Sheriff because of gun.
+		if serverRole == "Hero" then
+			return "Hero"
+		end
+
+		if serverRole == "Murderer" then
+			return "Murderer"
+		end
+
+		if serverRole == "Sheriff" then
+			return "Sheriff"
+		end
+
+		if serverRole == "Innocent" then
+			-- Continue below only for Hero fallback.
+			if PreviousRoles[player] ~= "Hero" then
+				return "Innocent"
+			end
+		end
+	end
+
+	----------------------------------------------------
+	-- HERO STATE HAS PRIORITY OVER GUN
+	----------------------------------------------------
+
+	if PreviousRoles[player] == "Hero" then
+		return "Hero"
+	end
+
+	----------------------------------------------------
+	-- MURDERER
+	----------------------------------------------------
+
+	if playerHasKnife(player) then
+		return "Murderer"
+	end
+
+	----------------------------------------------------
+	-- FIRST SHERIFF
+	----------------------------------------------------
+
+	if player == FirstSheriff
+		and FirstSheriffAlive
+		and not FirstSheriffLeft
+	then
+		return "Sheriff"
+	end
+
+	----------------------------------------------------
+	-- FALLBACK SHERIFF
+	----------------------------------------------------
+
+	if playerHasGun(player) then
+
+		-- If this player has not previously been identified
+		-- as Hero, and they are holding the initial Sheriff
+		-- gun, they can be treated as Sheriff.
+		if player == FirstSheriff then
+			return "Sheriff"
+		end
+
+		-- If the gun is an eligible dropped Hero gun,
+		-- do NOT automatically call the holder Sheriff.
+		if PreviousRoles[player] == "Hero" then
+			return "Hero"
+		end
+
+		-- Unknown gun holder.
+		-- This fallback is intentionally Sheriff only
+		-- when no previous Hero state exists.
+		return "Sheriff"
+	end
+
+	----------------------------------------------------
+	-- INNOCENT
+	----------------------------------------------------
+
+	return "Innocent"
+end
+
+--------------------------------------------------------
+-- ROLE COLORS
+--------------------------------------------------------
+
+local ROLE_COLORS = {
+	Murderer = Color3.fromRGB(255, 55, 55),
+	Sheriff = Color3.fromRGB(65, 125, 255),
+	Hero = Color3.fromRGB(255, 215, 55),
+	Innocent = Color3.fromRGB(75, 220, 105),
+}
+
+--------------------------------------------------------
+-- ROUND DETECTION
+--------------------------------------------------------
+
+local function getFirstAttribute(container, names)
+	if not container then
+		return nil
+	end
+
+	for _, name in ipairs(names) do
+		local value = container:GetAttribute(name)
+
+		if value ~= nil then
+			return value
+		end
+	end
+
+	return nil
+end
+
+local function getRoundSignature()
+	local roundId = getFirstAttribute(
+		Workspace,
+		CONFIG.ROUND_ATTRIBUTE_NAMES
+	)
+
+	if roundId == nil then
+		roundId = getFirstAttribute(
+			game:GetService("ReplicatedStorage"),
+			CONFIG.ROUND_ATTRIBUTE_NAMES
+		)
+	end
+
+	local state = getFirstAttribute(
+		Workspace,
+		CONFIG.STATE_ATTRIBUTE_NAMES
+	)
+
+	if state == nil then
+		state = getFirstAttribute(
+			game:GetService("ReplicatedStorage"),
+			CONFIG.STATE_ATTRIBUTE_NAMES
+		)
+	end
+
+	return tostring(roundId or "NO_ROUND")
+		.. "|"
+		.. tostring(state or "NO_STATE")
+end
+
+--------------------------------------------------------
+-- ROUND RESET
+--------------------------------------------------------
+
+local function resetRoundMemory()
+
+	FirstSheriff = nil
+	FirstSheriffUserId = nil
+
+	FirstSheriffAlive = false
+	FirstSheriffLeft = false
+
+	EligibleHeroGun = nil
+	EligibleHeroGunPosition = nil
+
+	LastGunOwner = nil
+	LastGunOwnerPosition = nil
+
+	table.clear(PreviousRoles)
+end
+
+--------------------------------------------------------
+-- DETECT FIRST SHERIFF
+--------------------------------------------------------
+
+local function updateFirstSheriff()
+	if FirstSheriff then
+		return
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+
+		local serverRole = getRoleAttribute(player)
+
+		if serverRole == "Sheriff" then
+			FirstSheriff = player
+			FirstSheriffUserId = player.UserId
+			FirstSheriffAlive = true
+			FirstSheriffLeft = false
+
+			return
+		end
+	end
+
+	----------------------------------------------------
+	-- FALLBACK: FIND A PLAYER HOLDING A GUN
+	----------------------------------------------------
+
+	for _, player in ipairs(Players:GetPlayers()) do
+
+		if playerHasGun(player) and not playerHasKnife(player) then
+
+			FirstSheriff = player
+			FirstSheriffUserId = player.UserId
+			FirstSheriffAlive = true
+			FirstSheriffLeft = false
+
+			return
+		end
+	end
+end
+
+--------------------------------------------------------
+-- FIRST SHERIFF DEATH DETECTION
+--------------------------------------------------------
+
+local function markSheriffDead(player)
+	if not player then
+		return
+	end
+
+	if player ~= FirstSheriff then
+		return
+	end
+
+	FirstSheriffAlive = false
+
+	LastGunOwner = player
+	LastGunOwnerPosition = getCharacterPosition(player)
+
+	----------------------------------------------------
+	-- THE FIRST SHERIFF'S GUN BECOMES HERO ELIGIBLE
+	----------------------------------------------------
+
+	EligibleHeroGun = nil
+	EligibleHeroGunPosition = LastGunOwnerPosition
+end
+
+--------------------------------------------------------
+-- PLAYER LEAVE
+--------------------------------------------------------
+
+Players.PlayerRemoving:Connect(function(player)
+
+	if player == FirstSheriff then
+
+		FirstSheriffLeft = true
+		FirstSheriffAlive = false
+
+		LastGunOwner = player
+
+		------------------------------------------------
+		-- We cannot read the exact server drop after
+		-- the player disappears, so retain their last
+		-- known position as the search target.
+		------------------------------------------------
+
+		if player.Character then
+			LastGunOwnerPosition = getCharacterPosition(player)
+		end
+
+		EligibleHeroGun = nil
+		EligibleHeroGunPosition = LastGunOwnerPosition
+	end
+
+	PreviousRoles[player] = nil
+
+	if ESPData[player] then
+		local data = ESPData[player]
+
+		if data.Highlight then
+			data.Highlight:Destroy()
+		end
+
+		if data.Billboard then
+			data.Billboard:Destroy()
+		end
+
+		ESPData[player] = nil
+	end
+end)
+
+--------------------------------------------------------
+-- CHARACTER EVENTS
+--------------------------------------------------------
+
+local function hookPlayer(player)
+
+	player.CharacterAdded:Connect(function(character)
+
+		if player == FirstSheriff then
+			FirstSheriffAlive = true
+		end
+
+		local humanoid = character:WaitForChild(
+			"Humanoid",
+			5
+		)
+
+		if humanoid then
+
+			humanoid.Died:Connect(function()
+
+				if player == FirstSheriff then
+					markSheriffDead(player)
+				elseif PreviousRoles[player] == "Hero" then
+
+					LastGunOwner = player
+					LastGunOwnerPosition =
+						getCharacterPosition(player)
+
+				end
+			end)
+		end
+	end)
+
+	if player.Character then
+
+		local humanoid = getHumanoid(player.Character)
+
+		if humanoid then
+			humanoid.Died:Connect(function()
+
+				if player == FirstSheriff then
+					markSheriffDead(player)
+				elseif PreviousRoles[player] == "Hero" then
+
+					LastGunOwner = player
+					LastGunOwnerPosition =
+						getCharacterPosition(player)
+
+				end
+			end)
+		end
+	end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	if player ~= LocalPlayer then
+		hookPlayer(player)
+	end
+end
+
+Players.PlayerAdded:Connect(function(player)
+
+	if player ~= LocalPlayer then
+		hookPlayer(player)
+	end
+
+	task.delay(1, function()
+		updateFirstSheriff()
+	end)
+end)
+
+--------------------------------------------------------
+-- GUN / DROP DETECTION
+--------------------------------------------------------
+
+local function hasGreenParticle(object)
+
+	if not object then
+		return false
+	end
+
+	for _, descendant in ipairs(object:GetDescendants()) do
+
+		if descendant:IsA("ParticleEmitter") then
+
+			local color = descendant.Color
+
+			if color then
+
+				local keypoints = color.Keypoints
+
+				for _, keypoint in ipairs(keypoints) do
+
+					local c = keypoint.Value
+
+					if c.G > c.R * 1.25
+						and c.G > c.B * 1.05
+						and c.G > 0.35
+					then
+						return true
+					end
+				end
+			end
+		end
+	end
+
+	return false
+end
+
+local function hasGunAttribute(object)
+
+	if not object then
+		return false
+	end
+
+	local attributeNames = {
+		"Gun",
+		"IsGun",
+		"SheriffGun",
+		"Weapon",
+		"IsWeapon",
+		"DroppedGun",
+		"HeroGun",
+	}
+
+	for _, name in ipairs(attributeNames) do
+
+		local value = object:GetAttribute(name)
+
+		if value == true then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function looksLikeDroppedGun(object)
+
+	if not object then
+		return false
+	end
+
+	local name = string.lower(object.Name)
+
+	----------------------------------------------------
+	-- STRONG NAME MATCH
+	----------------------------------------------------
+
+	if contains(name, CONFIG.GUN_WORDS) then
+		return true
+	end
+
+	----------------------------------------------------
+	-- DROP NAME
+	----------------------------------------------------
+
+	if string.find(name, "drop", 1, true)
+		or string.find(name, "dropped", 1, true)
+	then
+
+		if hasGreenParticle(object) then
+			return true
+		end
+	end
+
+	----------------------------------------------------
+	-- ATTRIBUTE MATCH
+	----------------------------------------------------
+
+	if hasGunAttribute(object) then
+		return true
+	end
+
+	----------------------------------------------------
+	-- GREEN PARTICLE + WEAPON/DROP WORD
+	----------------------------------------------------
+
+	if hasGreenParticle(object) then
+
+		if string.find(name, "drop", 1, true)
+			or string.find(name, "gun", 1, true)
+			or string.find(name, "weapon", 1, true)
+			or string.find(name, "sheriff", 1, true)
+			or string.find(name, "pistol", 1, true)
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+--------------------------------------------------------
+-- GET TOUCHABLE PART
+--------------------------------------------------------
+
+local function getTouchablePart(object)
+
+	if not object then
+		return nil
+	end
+
+	----------------------------------------------------
+	-- TOOL
+	----------------------------------------------------
+
+	if object:IsA("Tool") then
+
+		local handle = object:FindFirstChild("Handle")
+
+		if handle and handle:IsA("BasePart") then
+			return handle
+		end
+	end
+
+	----------------------------------------------------
+	-- PART
+	----------------------------------------------------
+
+	if object:IsA("BasePart") then
+
+		if object.CanTouch then
+			return object
+		end
+
+		return object
+	end
+
+	----------------------------------------------------
+	-- MODEL
+	----------------------------------------------------
+
+	if object:IsA("Model") then
+
+		local handle = object:FindFirstChild(
+			"Handle",
+			true
+		)
+
+		if handle and handle:IsA("BasePart") then
+			return handle
+		end
+
+		local primary = object.PrimaryPart
+
+		if primary then
+			return primary
+		end
+
+		for _, descendant in ipairs(object:GetDescendants()) do
+
+			if descendant:IsA("BasePart") then
+
+				if descendant.CanTouch then
+					return descendant
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+--------------------------------------------------------
+-- FIND DROPPED GUN
+--------------------------------------------------------
+
+local function findDroppedGun()
+
+	local characterPosition =
+		getCharacterPosition(LocalPlayer)
+
+	if not characterPosition then
+		return nil
+	end
+
+	local bestObject = nil
+	local bestPart = nil
+	local bestDistance = math.huge
+
+	for _, object in ipairs(
+		Workspace:GetDescendants()
+	) do
+
+		------------------------------------------------
+		-- Ignore player characters
+		------------------------------------------------
+
+		local belongsToPlayer = false
+
+		for _, player in ipairs(
+			Players:GetPlayers()
+		) do
+
+			if player.Character
+				and object:IsDescendantOf(
+					player.Character
+				)
+			then
+				belongsToPlayer = true
+				break
+			end
+		end
+
+		if belongsToPlayer then
+			continue
+		end
+
+		------------------------------------------------
+		-- DETECT DROP
+		------------------------------------------------
+
+		if looksLikeDroppedGun(object) then
+
+			local part = getTouchablePart(object)
+
+			if part then
+
+				local distance =
+					(characterPosition - part.Position).Magnitude
+
+				if distance <= CONFIG.MAX_PICK_DISTANCE then
+
+					if distance < bestDistance then
+
+						bestDistance = distance
+						bestObject = object
+						bestPart = part
+					end
+				end
+			end
+		end
+	end
+
+	return bestObject, bestPart
+end
+
+--------------------------------------------------------
+-- FIND GUN NEAR LAST OWNER
+--------------------------------------------------------
+
+local function findGunNearPosition(position)
+
+	if not position then
+		return nil
+	end
+
+	local bestObject = nil
+	local bestPart = nil
+	local bestDistance = math.huge
+
+	for _, object in ipairs(
+		Workspace:GetDescendants()
+	) do
+
+		if looksLikeDroppedGun(object) then
+
+			local part = getTouchablePart(object)
+
+			if part then
+
+				local distance =
+					(part.Position - position).Magnitude
+
+				if distance < bestDistance
+					and distance <= 100
+				then
+
+					bestDistance = distance
+					bestObject = object
+					bestPart = part
+				end
+			end
+		end
+	end
+
+	return bestObject, bestPart
+end
+
+--------------------------------------------------------
+-- CHECK IF LOCAL PLAYER GOT GUN
+--------------------------------------------------------
+
+local function localPlayerHasGun()
+
+	return playerHasGun(LocalPlayer)
+end
+
+--------------------------------------------------------
+-- HERO ASSIGNMENT
+--------------------------------------------------------
+
+local function tryAssignHero()
+
+	if not localPlayerHasGun() then
+		return
+	end
+
+	local currentRole =
+		getRoleAttribute(LocalPlayer)
+
+	----------------------------------------------------
+	-- SERVER SAYS SHERIFF
+	----------------------------------------------------
+
+	if currentRole == "Sheriff" then
+		return
+	end
+
+	----------------------------------------------------
+	-- SERVER SAYS MURDERER
+	----------------------------------------------------
+
+	if currentRole == "Murderer" then
+		return
+	end
+
+	----------------------------------------------------
+	-- IF WE PICKED UP THE ELIGIBLE DROPPED GUN
+	----------------------------------------------------
+
+	if not FirstSheriffAlive
+		and FirstSheriff
+	then
+
+		PreviousRoles[LocalPlayer] = "Hero"
+
+		return
+	end
+
+	----------------------------------------------------
+	-- LAST OWNER WAS HERO
+	----------------------------------------------------
+
+	if LastGunOwner
+		and LastGunOwner ~= LocalPlayer
+	then
+
+		PreviousRoles[LocalPlayer] = "Hero"
+	end
+end
+
+--------------------------------------------------------
+-- AUTO PICK
+--------------------------------------------------------
+
+local AutoPickBusy = false
+
+local function autoPickGun()
+
+	if not AutoPickEnabled then
+		return
+	end
+
+	if AutoPickBusy then
+		return
+	end
+
+	----------------------------------------------------
+	-- MUST BE INNOCENT
+	----------------------------------------------------
+
+	local currentRole =
+		detectRole(LocalPlayer)
+
+	if currentRole ~= "Innocent" then
+		return
+	end
+
+	----------------------------------------------------
+	-- FIND TARGET
+	----------------------------------------------------
+
+	local gunObject
+	local gunPart
+
+	----------------------------------------------------
+	-- FIRST: FIND NEAR LAST SHERIFF/HERO
+	----------------------------------------------------
+
+	if EligibleHeroGunPosition then
+
+		gunObject, gunPart =
+			findGunNearPosition(
+				EligibleHeroGunPosition
+			)
+	end
+
+	----------------------------------------------------
+	-- SECOND: GENERAL SEARCH
+	----------------------------------------------------
+
+	if not gunObject then
+
+		gunObject, gunPart =
+			findDroppedGun()
+	end
+
+	if not gunObject or not gunPart then
+		return
+	end
+
+	AutoPickBusy = true
+
+	local character =
+		LocalPlayer.Character
+
+	local root =
+		getRoot(character)
+
+	if not root then
+		AutoPickBusy = false
+		return
+	end
+
+	----------------------------------------------------
+	-- SAVE ORIGINAL POSITION
+	----------------------------------------------------
+
+	local oldCFrame = root.CFrame
+
+	----------------------------------------------------
+	-- TELEPORT TO DROP
+	----------------------------------------------------
+
+	pcall(function()
+
+		root.CFrame =
+			CFrame.new(
+				gunPart.Position
+				+ Vector3.new(
+					0,
+					CONFIG.TELEPORT_HEIGHT,
+					0
+				)
+			)
+
+	end)
+
+	----------------------------------------------------
+	-- LET PHYSICS / TOUCHED SYSTEM RUN
+	----------------------------------------------------
+
+	local startTime = os.clock()
+
+	while os.clock() - startTime
+		< CONFIG.PICKUP_WAIT
+	do
+
+		if localPlayerHasGun() then
+			break
+		end
+
+		task.wait(0.05)
+
+		------------------------------------------------
+		-- Keep character close enough to touch
+		------------------------------------------------
+
+		if root
+			and root.Parent
+			and gunPart
+			and gunPart.Parent
+		then
+
+			local distance =
+				(root.Position - gunPart.Position).Magnitude
+
+			if distance > 7 then
+
+				pcall(function()
+
+					root.CFrame =
+						CFrame.new(
+							gunPart.Position
+								+ Vector3.new(
+									0,
+									2.5,
+									0
+								)
+						)
+
+				end)
+			end
+		end
+	end
+
+	----------------------------------------------------
+	-- WAIT FOR BACKPACK REPLICATION
+	----------------------------------------------------
+
+	task.wait(CONFIG.RETURN_DELAY)
+
+	----------------------------------------------------
+	-- IF LEGITIMATE PICKUP HAPPENED
+	----------------------------------------------------
+
+	if localPlayerHasGun() then
+
+		------------------------------------------------
+		-- Mark Hero ONLY if this was a dropped
+		-- Sheriff/Hero gun and server didn't identify
+		-- us as Sheriff.
+		------------------------------------------------
+
+		tryAssignHero()
+	end
+
+	----------------------------------------------------
+	-- RETURN TO OLD POSITION
+	----------------------------------------------------
+
+	if root and root.Parent then
+
+		pcall(function()
+			root.CFrame = oldCFrame
+		end)
+	end
+
+	AutoPickBusy = false
+end
+
+--------------------------------------------------------
+-- ESP
+--------------------------------------------------------
+
+local function removeESP(player)
+
+	local data = ESPData[player]
+
+	if not data then
+		return
+	end
+
+	if data.Highlight then
+		pcall(function()
+			data.Highlight:Destroy()
+		end)
+	end
+
+	if data.Billboard then
+		pcall(function()
+			data.Billboard:Destroy()
+		end)
+	end
+
+	ESPData[player] = nil
+end
+
+local function createESP(player)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	if not CONFIG.ESP_ENABLED then
+		return
+	end
+
+	local character = player.Character
+
+	if not character then
+		return
+	end
+
+	local root = getRoot(character)
+
+	if not root then
+		return
+	end
+
+	----------------------------------------------------
+	-- ROLE
+	----------------------------------------------------
+
+	local role = detectRole(player)
+
+	local color =
+		ROLE_COLORS[role]
+		or ROLE_COLORS.Innocent
+
+	----------------------------------------------------
+	-- REMOVE OLD
+	----------------------------------------------------
+
+	removeESP(player)
+
+	----------------------------------------------------
+	-- HIGHLIGHT
+	----------------------------------------------------
+
+	local highlight =
+		Instance.new("Highlight")
+
+	highlight.Name =
+		"KYZEN_ESP_Highlight"
+
+	highlight.Adornee =
+		character
+
+	highlight.FillColor =
+		color
+
+	highlight.OutlineColor =
+		color
+
+	highlight.FillTransparency =
+		0.72
+
+	highlight.OutlineTransparency =
+		0
+
+	highlight.DepthMode =
+		Enum.HighlightDepthMode.AlwaysOnTop
+
+	highlight.Parent =
+		character
+
+	----------------------------------------------------
+	-- BILLBOARD
+	----------------------------------------------------
+
+	local billboard =
+		Instance.new("BillboardGui")
+
+	billboard.Name =
+		"KYZEN_ESP_Billboard"
+
+	billboard.Adornee =
+		root
+
+	billboard.Size =
+		UDim2.fromOffset(
+			230,
+			60
+		)
+
+	billboard.StudsOffset =
+		Vector3.new(
+			0,
+			3.5,
+			0
+		)
+
+	billboard.AlwaysOnTop =
+		true
+
+	billboard.MaxDistance =
+		1000
+
+	billboard.Parent =
+		character
+
+	local frame =
+		Instance.new("Frame")
+
+	frame.BackgroundTransparency =
+		1
+
+	frame.Size =
+		UDim2.fromScale(
+			1,
+			1
+		)
+
+	frame.Parent =
+		billboard
+
+	local nameLabel =
+		Instance.new("TextLabel")
+
+	nameLabel.BackgroundTransparency =
+		1
+
+	nameLabel.Size =
+		UDim2.new(
+			1,
+			0,
+			0,
+			23
+		)
+
+	nameLabel.Position =
+		UDim2.fromOffset(
+			0,
+			0
+		)
+
+	nameLabel.Font =
+		Enum.Font.GothamBold
+
+	nameLabel.TextSize =
+		14
+
+	nameLabel.TextColor3 =
+		Color3.fromRGB(
+			255,
+			255,
+			255
+		)
+
+	nameLabel.TextStrokeTransparency =
+		0
+
+	nameLabel.TextStrokeColor3 =
+		Color3.fromRGB(
+			0,
+			0,
+			0
+		)
+
+	nameLabel.Text =
+		player.DisplayName
+		.. "  @"
+		.. player.Name
+
+	nameLabel.Parent =
+		frame
+
+	local roleLabel =
+		Instance.new("TextLabel")
+
+	roleLabel.BackgroundTransparency =
+		1
+
+	roleLabel.Size =
+		UDim2.new(
+			1,
+			0,
+			0,
+			20
+		)
+
+	roleLabel.Position =
+		UDim2.fromOffset(
+			0,
+			21
+		)
+
+	roleLabel.Font =
+		Enum.Font.GothamBold
+
+	roleLabel.TextSize =
+		13
+
+	roleLabel.TextColor3 =
+		color
+
+	roleLabel.TextStrokeTransparency =
+		0
+
+	roleLabel.TextStrokeColor3 =
+		Color3.fromRGB(
+			0,
+			0,
+			0
+		)
+
+	roleLabel.Text =
+		role
+
+	roleLabel.Parent =
+		frame
+
+	local distanceLabel =
+		Instance.new("TextLabel")
+
+	distanceLabel.BackgroundTransparency =
+		1
+
+	distanceLabel.Size =
+		UDim2.new(
+			1,
+			0,
+			0,
+			18
+		)
+
+	distanceLabel.Position =
+		UDim2.fromOffset(
+			0,
+			40
+		)
+
+	distanceLabel.Font =
+		Enum.Font.Gotham
+
+	distanceLabel.TextSize =
+		11
+
+	distanceLabel.TextColor3 =
+		Color3.fromRGB(
+			210,
+			210,
+			215
+		)
+
+	distanceLabel.TextStrokeTransparency =
+		0.25
+
+	distanceLabel.Text =
+		"Distance: -- studs"
+
+	distanceLabel.Parent =
+		frame
+
+	ESPData[player] = {
+		Highlight = highlight,
+		Billboard = billboard,
+		NameLabel = nameLabel,
+		RoleLabel = roleLabel,
+		DistanceLabel = distanceLabel,
+		Role = role,
+	}
+end
+
+--------------------------------------------------------
+-- UPDATE ESP
+--------------------------------------------------------
+
+local function updateESP(player)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	if not CONFIG.ESP_ENABLED then
+		removeESP(player)
+		return
+	end
+
+	local character =
+		player.Character
+
+	local root =
+		getRoot(character)
+
+	if not character or not root then
+		removeESP(player)
+		return
+	end
+
+	local role =
+		detectRole(player)
+
+	local color =
+		ROLE_COLORS[role]
+		or ROLE_COLORS.Innocent
+
+	local data =
+		ESPData[player]
+
+	if not data then
+
+		createESP(player)
+
+		data =
+			ESPData[player]
+
+		if not data then
+			return
+		end
+	end
+
+	----------------------------------------------------
+	-- ROLE CHANGED
+	----------------------------------------------------
+
+	if data.Role ~= role then
+
+		createESP(player)
+
+		data =
+			ESPData[player]
+
+		if not data then
+			return
+		end
+	end
+
+	----------------------------------------------------
+	-- UPDATE COLOR
+	----------------------------------------------------
+
+	data.Role =
+		role
+
+	data.Highlight.FillColor =
+		color
+
+	data.Highlight.OutlineColor =
+		color
+
+	data.RoleLabel.Text =
+		role
+
+	data.RoleLabel.TextColor3 =
+		color
+
+	----------------------------------------------------
+	-- DISTANCE
+	----------------------------------------------------
+
+	local localPosition =
+		getCharacterPosition(
+			LocalPlayer
+		)
+
+	if localPosition then
+
+		local distance =
+			(
+				root.Position
+				- localPosition
+			).Magnitude
+
+		data.DistanceLabel.Text =
+			string.format(
+				"Distance: %d studs",
+				math.floor(distance)
+			)
+	end
+end
+
+--------------------------------------------------------
+-- HARD ESP RESET
+--------------------------------------------------------
+
+local function hardResetESP()
+
+	for player in pairs(ESPData) do
+		removeESP(player)
+	end
+
+	table.clear(ESPData)
+end
+
+--------------------------------------------------------
+-- PLAYER LIST
+--------------------------------------------------------
+
+local function updatePlayerList()
+
+	if not PlayerList then
+		return
+	end
+
+	for _, child in ipairs(
+		PlayerList:GetChildren()
+	) do
+
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	local players =
+		Players:GetPlayers()
+
+	table.sort(
+		players,
+		function(a, b)
+			return a.Name < b.Name
+		end
+	)
+
+	for _, player in ipairs(players) do
+
+		if player ~= LocalPlayer then
+
+			local role =
+				detectRole(player)
+
+			local color =
+				ROLE_COLORS[role]
+				or ROLE_COLORS.Innocent
+
+			local button =
+				Instance.new("TextButton")
+
+			button.Size =
+				UDim2.new(
+					1,
+					-8,
+					0,
+					42
+				)
+
+			button.BackgroundColor3 =
+				Color3.fromRGB(
+					28,
+					31,
+					38
+				)
+
+			button.BackgroundTransparency =
+				0.1
+
+			button.Text =
+				player.DisplayName
+				.. "  •  "
+				.. role
+
+			button.TextColor3 =
+				color
+
+			button.Font =
+				Enum.Font.GothamBold
+
+			button.TextSize =
+				12
+
+			button.AutoButtonColor =
+				false
+
+			button.Parent =
+				PlayerList
+
+			local corner =
+				Instance.new("UICorner")
+
+			corner.CornerRadius =
+				UDim.new(
+					0,
+					7
+				)
+
+			corner.Parent =
+				button
+
+			local stroke =
+				Instance.new("UIStroke")
+
+			stroke.Color =
+				Color3.fromRGB(
+					5,
+					6,
+					8
+				)
+
+			stroke.Thickness =
+				1.5
+
+			stroke.Parent =
+				button
+		end
+	end
+end
+
+--------------------------------------------------------
+-- GUI HELPERS
+--------------------------------------------------------
+
+local function createCorner(parent, radius)
+
+	local corner =
+		Instance.new("UICorner")
+
+	corner.CornerRadius =
+		UDim.new(
+			0,
+			radius
+		)
+
+	corner.Parent =
+		parent
+
+	return corner
+end
+
+local function createStroke(parent, color, thickness)
+
+	local stroke =
+		Instance.new("UIStroke")
+
+	stroke.Color =
+		color
+
+	stroke.Thickness =
+		thickness
+
+	stroke.Parent =
+		parent
+
+	return stroke
+end
+
+local function createGradient(parent)
+
+	local gradient =
+		Instance.new("UIGradient")
+
+	gradient.Color =
+		ColorSequence.new({
+
+			ColorSequenceKeypoint.new(
+				0,
+				CONFIG.UI.RED
+			),
+
+			ColorSequenceKeypoint.new(
+				0.48,
+				Color3.fromRGB(
+					90,
+					65,
+					145
+				)
+			),
+
+			ColorSequenceKeypoint.new(
+				1,
+				CONFIG.UI.BLUE
+			),
+		})
+
+	gradient.Rotation =
+		0
+
+	gradient.Parent =
+		parent
+
+	return gradient
+end
+
+--------------------------------------------------------
+-- DRAGGING
+--------------------------------------------------------
+
+local function makeDraggable(frame)
+
+	local dragging = false
+	local dragStart
+	local startPosition
+
+	local inputConnection
+	local changedConnection
+
+	frame.InputBegan:Connect(function(input)
+
+		if input.UserInputType ==
+			Enum.UserInputType.MouseButton1
+			or input.UserInputType ==
+			Enum.UserInputType.Touch
+		then
+
+			dragging = true
+
+			dragStart =
+				input.Position
+
+			startPosition =
+				frame.Position
+
+			inputConnection =
+				input.Changed:Connect(function()
+
+					if input.UserInputState ==
+						Enum.UserInputState.End
+					then
+
+						dragging = false
+					end
+				end)
+		end
+	end)
+
+	changedConnection =
+		UserInputService.InputChanged:Connect(
+			function(input)
+
+				if not dragging then
+					return
+				end
+
+				if input.UserInputType ==
+					Enum.UserInputType.MouseMovement
+					or input.UserInputType ==
+					Enum.UserInputType.Touch
+				then
+
+					local delta =
+						input.Position
+						- dragStart
+
+					frame.Position =
+						UDim2.new(
+							startPosition.X.Scale,
+							startPosition.X.Offset
+								+ delta.X,
+
+							startPosition.Y.Scale,
+							startPosition.Y.Offset
+								+ delta.Y
+						)
+				end
+			end
+		)
+
+	return function()
+
+		disconnectConnection(
+			inputConnection
+		)
+
+		disconnectConnection(
+			changedConnection
+		)
+	end
+end
+
+--------------------------------------------------------
+-- LOADING GUI
+--------------------------------------------------------
+
+local LoadingGui =
+	Instance.new("ScreenGui")
+
+LoadingGui.Name =
+	"KYZEN_LOADING_V8"
+
+LoadingGui.ResetOnSpawn =
+	false
+
+LoadingGui.IgnoreGuiInset =
+	true
+
+LoadingGui.Parent =
+	PlayerGui
+
+local LoadingFrame =
+	Instance.new("Frame")
+
+LoadingFrame.AnchorPoint =
+	Vector2.new(
+		0.5,
+		0.5
+	)
+
+LoadingFrame.Position =
+	UDim2.fromScale(
+		0.5,
+		0.5
+	)
+
+LoadingFrame.Size =
+	UDim2.fromOffset(
+		300,
+		135
+	)
+
+LoadingFrame.BackgroundColor3 =
+	CONFIG.UI.DARK
+
+LoadingFrame.Parent =
+	LoadingGui
+
+createCorner(
+	LoadingFrame,
+	14
+)
+
+createStroke(
+	LoadingFrame,
+	CONFIG.UI.STROKE,
+	3
+)
+
+createGradient(
+	LoadingFrame
+).Transparency =
+	NumberSequence.new(
+		0.88
+	)
+
+local LoadingTitle =
+	Instance.new("TextLabel")
+
+LoadingTitle.BackgroundTransparency =
+	1
+
+LoadingTitle.Position =
+	UDim2.fromOffset(
+		15,
+		12
+	)
+
+LoadingTitle.Size =
+	UDim2.new(
+		1,
+		-30,
+		0,
+		25
+	)
+
+LoadingTitle.Font =
+	Enum.Font.GothamBold
+
+LoadingTitle.TextSize =
+	17
+
+LoadingTitle.Text =
+	"KYZEN PERKS"
+
+LoadingTitle.TextColor3 =
+	CONFIG.UI.WHITE
+
+LoadingTitle.Parent =
+	LoadingFrame
+
+local LoadingStatus =
+	Instance.new("TextLabel")
+
+LoadingStatus.BackgroundTransparency =
+	1
+
+LoadingStatus.Position =
+	UDim2.fromOffset(
+		15,
+		42
+	)
+
+LoadingStatus.Size =
+	UDim2.new(
+		1,
+		-30,
+		0,
+		20
+	)
+
+LoadingStatus.Font =
+	Enum.Font.Gotham
+
+LoadingStatus.TextSize =
+	11
+
+LoadingStatus.TextColor3 =
+	CONFIG.UI.GREY
+
+LoadingStatus.Text =
+	"Initializing system..."
+
+LoadingStatus.Parent =
+	LoadingFrame
+
+local LoadingBarBack =
+	Instance.new("Frame")
+
+LoadingBarBack.Position =
+	UDim2.fromOffset(
+		18,
+		79
+	)
+
+LoadingBarBack.Size =
+	UDim2.new(
+		1,
+		-36,
+		0,
+		8
+	)
+
+LoadingBarBack.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		38,
+		45
+	)
+
+LoadingBarBack.Parent =
+	LoadingFrame
+
+createCorner(
+	LoadingBarBack,
+	5
+)
+
+local LoadingBar =
+	Instance.new("Frame")
+
+LoadingBar.Size =
+	UDim2.fromScale(
+		0,
+		1
+	)
+
+LoadingBar.BackgroundColor3 =
+	CONFIG.UI.RED
+
+LoadingBar.Parent =
+	LoadingBarBack
+
+createCorner(
+	LoadingBar,
+	5
+)
+
+createGradient(
+	LoadingBar
+)
+
+local LoadingVersion =
+	Instance.new("TextLabel")
+
+LoadingVersion.BackgroundTransparency =
+	1
+
+LoadingVersion.Position =
+	UDim2.fromOffset(
+		15,
+		101
+	)
+
+LoadingVersion.Size =
+	UDim2.new(
+		1,
+		-30,
+		0,
+		20
+	)
+
+LoadingVersion.Font =
+	Enum.Font.GothamBold
+
+LoadingVersion.TextSize =
+	10
+
+LoadingVersion.TextColor3 =
+	CONFIG.UI.GREY
+
+LoadingVersion.Text =
+	"PRIVATE DEV TEST • "
+		.. CONFIG.VERSION
+
+LoadingVersion.Parent =
+	LoadingFrame
+
+--------------------------------------------------------
+-- LOADING ANIMATION
+--------------------------------------------------------
+
+task.spawn(function()
+
+	local statuses = {
+		"Initializing system...",
+		"Loading ESP...",
+		"Loading role detector...",
+		"Loading Hero tracker...",
+		"Loading Auto Pick...",
+		"System ready."
+	}
+
+	for index, status in ipairs(statuses) do
+
+		LoadingStatus.Text =
+			status
+
+		TweenService:Create(
+			LoadingBar,
+			TweenInfo.new(
+				0.35,
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			),
+			{
+				Size =
+					UDim2.fromScale(
+						index / #statuses,
+						1
+					)
+			}
+		):Play()
+
+		task.wait(
+			index == #statuses
+				and 0.45
+				or 0.28
+		)
+	end
+
+	TweenService:Create(
+		LoadingFrame,
+		TweenInfo.new(
+			0.3,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.In
+		),
+		{
+			Size =
+				UDim2.fromOffset(
+					280,
+					120
+				),
+
+			BackgroundTransparency =
+				1
+		}
+	):Play()
+
+	task.wait(0.32)
+
+	LoadingGui:Destroy()
+end)
+
+--------------------------------------------------------
+-- MAIN GUI
+--------------------------------------------------------
+
+MainGui =
+	Instance.new("ScreenGui")
+
+MainGui.Name =
+	"KYZEN_PERKS_V8"
+
+MainGui.ResetOnSpawn =
+	false
+
+MainGui.IgnoreGuiInset =
+	true
+
+MainGui.Parent =
+	PlayerGui
+
+--------------------------------------------------------
+-- TOGGLE BUTTON
+--------------------------------------------------------
+
+ToggleButton =
+	Instance.new("ImageButton")
+
+ToggleButton.Name =
+	"KYZEN_TOGGLE"
+
+ToggleButton.Size =
+	UDim2.fromOffset(
+		52,
+		52
+	)
+
+ToggleButton.Position =
+	UDim2.new(
+		0,
+		18,
+		0.5,
+		-26
+	)
+
+ToggleButton.BackgroundColor3 =
+	CONFIG.UI.DARK
+
+ToggleButton.Image =
+	"rbxassetid://129427980084843"
+
+ToggleButton.ScaleType =
+	Enum.ScaleType.Fit
+
+ToggleButton.Parent =
+	MainGui
+
+createCorner(
+	ToggleButton,
+	26
+)
+
+createStroke(
+	ToggleButton,
+	CONFIG.UI.STROKE,
+	3
+)
+
+makeDraggable(
+	ToggleButton
+)
+
+--------------------------------------------------------
+-- MAIN FRAME
+--------------------------------------------------------
+
+MainFrame =
+	Instance.new("Frame")
+
+MainFrame.Name =
+	"MainFrame"
+
+MainFrame.AnchorPoint =
+	Vector2.new(
+		0.5,
+		0.5
+	)
+
+MainFrame.Position =
+	UDim2.fromScale(
+		0.5,
+		0.5
+	)
+
+MainFrame.Size =
+	UDim2.fromOffset(
+		440,
+		280
+	)
+
+MainFrame.BackgroundColor3 =
+	CONFIG.UI.DARK
+
+MainFrame.Parent =
+	MainGui
+
+createCorner(
+	MainFrame,
+	15
+)
+
+createStroke(
+	MainFrame,
+	CONFIG.UI.STROKE,
+	3
+)
+
+makeDraggable(
+	MainFrame
+)
+
+--------------------------------------------------------
+-- TOP BAR
+--------------------------------------------------------
+
+local TopBar =
+	Instance.new("Frame")
+
+TopBar.BackgroundColor3 =
+	CONFIG.UI.DARK2
+
+TopBar.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		45
+	)
+
+TopBar.Parent =
+	MainFrame
+
+createCorner(
+	TopBar,
+	15
+)
+
+local TopGradient =
+	createGradient(
+		TopBar
+	)
+
+TopGradient.Transparency =
+	NumberSequence.new(
+		0.78
+	)
+
+local Title =
+	Instance.new("TextLabel")
+
+Title.BackgroundTransparency =
+	1
+
+Title.Position =
+	UDim2.fromOffset(
+		15,
+		5
+	)
+
+Title.Size =
+	UDim2.new(
+		0.55,
+		0,
+		0,
+		20
+	)
+
+Title.Font =
+	Enum.Font.GothamBold
+
+Title.TextSize =
+	15
+
+Title.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+Title.Text =
+	"KYZEN PERKS"
+
+Title.TextColor3 =
+	CONFIG.UI.WHITE
+
+Title.Parent =
+	TopBar
+
+VersionLabel =
+	Instance.new("TextLabel")
+
+VersionLabel.BackgroundTransparency =
+	1
+
+VersionLabel.Position =
+	UDim2.fromOffset(
+		15,
+		23
+	)
+
+VersionLabel.Size =
+	UDim2.new(
+		0.5,
+		0,
+		0,
+		15
+	)
+
+VersionLabel.Font =
+	Enum.Font.GothamBold
+
+VersionLabel.TextSize =
+	9
+
+VersionLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+VersionLabel.Text =
+	"PRIVATE DEV • "
+		.. CONFIG.VERSION
+
+VersionLabel.TextColor3 =
+	CONFIG.UI.GREY
+
+VersionLabel.Parent =
+	TopBar
+
+local CloseButton =
+	Instance.new("TextButton")
+
+CloseButton.BackgroundTransparency =
+	1
+
+CloseButton.Position =
+	UDim2.new(
+		1,
+		-38,
+		0,
+		8
+	)
+
+CloseButton.Size =
+	UDim2.fromOffset(
+		28,
+		28
+	)
+
+CloseButton.Font =
+	Enum.Font.GothamBold
+
+CloseButton.TextSize =
+	18
+
+CloseButton.Text =
+	"×"
+
+CloseButton.TextColor3 =
+	CONFIG.UI.WHITE
+
+CloseButton.Parent =
+	TopBar
+
+--------------------------------------------------------
+-- SIDEBAR
+--------------------------------------------------------
+
+local Sidebar =
+	Instance.new("Frame")
+
+Sidebar.Position =
+	UDim2.fromOffset(
+		8,
+		53
+	)
+
+Sidebar.Size =
+	UDim2.new(
+		0,
+		105,
+		1,
+		-61
+	)
+
+Sidebar.BackgroundColor3 =
+	CONFIG.UI.DARK2
+
+Sidebar.Parent =
+	MainFrame
+
+createCorner(
+	Sidebar,
+	12
+)
+
+createStroke(
+	Sidebar,
+	CONFIG.UI.STROKE,
+	2
+)
+
+local function createTabButton(text, position)
+
+	local button =
+		Instance.new("TextButton")
+
+	button.Position =
+		position
+
+	button.Size =
+		UDim2.new(
+			1,
+			-12,
+			0,
+			40
+		)
+
+	button.BackgroundColor3 =
+		Color3.fromRGB(
+			27,
+			30,
+			37
+		)
+
+	button.Text =
+		text
+
+	button.TextColor3 =
+		CONFIG.UI.GREY
+
+	button.Font =
+		Enum.Font.GothamBold
+
+	button.TextSize =
+		11
+
+	button.AutoButtonColor =
+		false
+
+	button.Parent =
+		Sidebar
+
+	createCorner(
+		button,
+		8
+	)
+
+	createStroke(
+		button,
+		CONFIG.UI.STROKE,
+		1.5
+	)
+
+	return button
+end
+
+ESPButton =
+	createTabButton(
+		"ESP",
+		UDim2.fromOffset(
+			6,
+			10
+		)
+	)
+
+FarmButton =
+	createTabButton(
+		"FARM",
+		UDim2.fromOffset(
+			6,
+			58
+		)
+	)
+
+--------------------------------------------------------
+-- CONTENT AREA
+--------------------------------------------------------
+
+local Content =
+	Instance.new("Frame")
+
+Content.Position =
+	UDim2.fromOffset(
+		121,
+		53
+	)
+
+Content.Size =
+	UDim2.new(
+		1,
+		-129,
+		1,
+		-61
+	)
+
+Content.BackgroundTransparency =
+	1
+
+Content.Parent =
+	MainFrame
+
+--------------------------------------------------------
+-- ESP PAGE
+--------------------------------------------------------
+
+ESPPage =
+	Instance.new("Frame")
+
+ESPPage.Size =
+	UDim2.fromScale(
+		1,
+		1
+	)
+
+ESPPage.BackgroundTransparency =
+	1
+
+ESPPage.Parent =
+	Content
+
+local ESPHeader =
+	Instance.new("TextLabel")
+
+ESPHeader.BackgroundTransparency =
+	1
+
+ESPHeader.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		25
+	)
+
+ESPHeader.Font =
+	Enum.Font.GothamBold
+
+ESPHeader.TextSize =
+	15
+
+ESPHeader.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+ESPHeader.Text =
+	"ESP"
+
+ESPHeader.TextColor3 =
+	CONFIG.UI.WHITE
+
+ESPHeader.Parent =
+	ESPPage
+
+ESPStatusLabel =
+	Instance.new("TextLabel")
+
+ESPStatusLabel.BackgroundTransparency =
+	1
+
+ESPStatusLabel.Position =
+	UDim2.fromOffset(
+		0,
+		25
+	)
+
+ESPStatusLabel.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		18
+	)
+
+ESPStatusLabel.Font =
+	Enum.Font.Gotham
+
+ESPStatusLabel.TextSize =
+	10
+
+ESPStatusLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+ESPStatusLabel.TextColor3 =
+	CONFIG.UI.GREY
+
+ESPStatusLabel.Text =
+	"ESP ACTIVE"
+
+ESPStatusLabel.Parent =
+	ESPPage
+
+--------------------------------------------------------
+-- ESP ON/OFF
+--------------------------------------------------------
+
+local ESPToggle =
+	Instance.new("TextButton")
+
+ESPToggle.Position =
+	UDim2.new(
+		1,
+		-78,
+		0,
+		3
+	)
+
+ESPToggle.Size =
+	UDim2.fromOffset(
+		70,
+		27
+	)
+
+ESPToggle.Font =
+	Enum.Font.GothamBold
+
+ESPToggle.TextSize =
+	10
+
+ESPToggle.Text =
+	"ON"
+
+ESPToggle.TextColor3 =
+	CONFIG.UI.WHITE
+
+ESPToggle.BackgroundColor3 =
+	CONFIG.UI.RED
+
+ESPToggle.Parent =
+	ESPPage
+
+createCorner(
+	ESPToggle,
+	8
+)
+
+createStroke(
+	ESPToggle,
+	CONFIG.UI.STROKE,
+	2
+)
+
+--------------------------------------------------------
+-- PLAYER LIST
+--------------------------------------------------------
+
+PlayerList =
+	Instance.new("ScrollingFrame")
+
+PlayerList.Position =
+	UDim2.fromOffset(
+		0,
+		52
+	)
+
+PlayerList.Size =
+	UDim2.new(
+		1,
+		0,
+		1,
+		-52
+	)
+
+PlayerList.BackgroundColor3 =
+	Color3.fromRGB(
+		16,
+		18,
+		23
+	)
+
+PlayerList.BackgroundTransparency =
+	0.1
+
+PlayerList.BorderSizePixel =
+	0
+
+PlayerList.ScrollBarThickness =
+	3
+
+PlayerList.ScrollBarImageColor3 =
+	CONFIG.UI.RED
+
+PlayerList.AutomaticCanvasSize =
+	Enum.AutomaticSize.Y
+
+PlayerList.CanvasSize =
+	UDim2.new(
+		0,
+		0,
+		0,
+		0
+	)
+
+PlayerList.Parent =
+	ESPPage
+
+createCorner(
+	PlayerList,
+	9
+)
+
+local PlayerPadding =
+	Instance.new("UIPadding")
+
+PlayerPadding.PaddingTop =
+	UDim.new(
+		0,
+		5
+	)
+
+PlayerPadding.PaddingLeft =
+	UDim.new(
+		0,
+		4
+	)
+
+PlayerPadding.PaddingRight =
+	UDim.new(
+		0,
+		4
+	)
+
+PlayerPadding.Parent =
+	PlayerList
+
+local PlayerLayout =
+	Instance.new("UIListLayout")
+
+PlayerLayout.Padding =
+	UDim.new(
+		0,
+		4
+	)
+
+PlayerLayout.Parent =
+	PlayerList
+
+--------------------------------------------------------
+-- FARM PAGE
+--------------------------------------------------------
+
+FarmPage =
+	Instance.new("Frame")
+
+FarmPage.Size =
+	UDim2.fromScale(
+		1,
+		1
+	)
+
+FarmPage.BackgroundTransparency =
+	1
+
+FarmPage.Visible =
+	false
+
+FarmPage.Parent =
+	Content
+
+local FarmHeader =
+	Instance.new("TextLabel")
+
+FarmHeader.BackgroundTransparency =
+	1
+
+FarmHeader.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		25
+	)
+
+FarmHeader.Font =
+	Enum.Font.GothamBold
+
+FarmHeader.TextSize =
+	15
+
+FarmHeader.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+FarmHeader.Text =
+	"FARM"
+
+FarmHeader.TextColor3 =
+	CONFIG.UI.WHITE
+
+FarmHeader.Parent =
+	FarmPage
+
+FarmStatusLabel =
+	Instance.new("TextLabel")
+
+FarmStatusLabel.BackgroundTransparency =
+	1
+
+FarmStatusLabel.Position =
+	UDim2.fromOffset(
+		0,
+		25
+	)
+
+FarmStatusLabel.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		18
+	)
+
+FarmStatusLabel.Font =
+	Enum.Font.Gotham
+
+FarmStatusLabel.TextSize =
+	10
+
+FarmStatusLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+FarmStatusLabel.TextColor3 =
+	CONFIG.UI.GREY
+
+FarmStatusLabel.Text =
+	"Auto Pick Gun • OFF"
+
+FarmStatusLabel.Parent =
+	FarmPage
+
+--------------------------------------------------------
+-- AUTO PICK CARD
+--------------------------------------------------------
+
+local FarmCard =
+	Instance.new("Frame")
+
+FarmCard.Position =
+	UDim2.fromOffset(
+		0,
+		57
+	)
+
+FarmCard.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		72
+	)
+
+FarmCard.BackgroundColor3 =
+	Color3.fromRGB(
+		25,
+		28,
+		35
+	)
+
+FarmCard.Parent =
+	FarmPage
+
+createCorner(
+	FarmCard,
+	10
+)
+
+createStroke(
+	FarmCard,
+	CONFIG.UI.STROKE,
+	2
+)
+
+local AutoPickTitle =
+	Instance.new("TextLabel")
+
+AutoPickTitle.BackgroundTransparency =
+	1
+
+AutoPickTitle.Position =
+	UDim2.fromOffset(
+		12,
+		9
+	)
+
+AutoPickTitle.Size =
+	UDim2.new(
+		1,
+		-75,
+		0,
+		20
+	)
+
+AutoPickTitle.Font =
+	Enum.Font.GothamBold
+
+AutoPickTitle.TextSize =
+	11
+
+AutoPickTitle.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+AutoPickTitle.Text =
+	"Auto Pick Gun"
+
+AutoPickTitle.TextColor3 =
+	CONFIG.UI.WHITE
+
+AutoPickTitle.Parent =
+	FarmCard
+
+local AutoPickDescription =
+	Instance.new("TextLabel")
+
+AutoPickDescription.BackgroundTransparency =
+	1
+
+AutoPickDescription.Position =
+	UDim2.fromOffset(
+		12,
+		31
+	)
+
+AutoPickDescription.Size =
+	UDim2.new(
+		1,
+		-75,
+		0,
+		30
+	)
+
+AutoPickDescription.Font =
+	Enum.Font.Gotham
+
+AutoPickDescription.TextSize =
+	9
+
+AutoPickDescription.TextWrapped =
+	true
+
+AutoPickDescription.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+AutoPickDescription.TextYAlignment =
+	Enum.TextYAlignment.Top
+
+AutoPickDescription.Text =
+	"Teleport to eligible dropped gun → pickup → return"
+
+AutoPickDescription.TextColor3 =
+	CONFIG.UI.GREY
+
+AutoPickDescription.Parent =
+	FarmCard
+
+--------------------------------------------------------
+-- SWITCH
+--------------------------------------------------------
+
+AutoPickSwitch =
+	Instance.new("TextButton")
+
+AutoPickSwitch.AnchorPoint =
+	Vector2.new(
+		1,
+		0.5
+	)
+
+AutoPickSwitch.Position =
+	UDim2.new(
+		1,
+		-12,
+		0.5,
+		0
+	)
+
+AutoPickSwitch.Size =
+	UDim2.fromOffset(
+		48,
+		25
+	)
+
+AutoPickSwitch.Text =
+	""
+
+AutoPickSwitch.BackgroundColor3 =
+	Color3.fromRGB(
+		45,
+		48,
+		55
+	)
+
+AutoPickSwitch.Parent =
+	FarmCard
+
+createCorner(
+	AutoPickSwitch,
+	13
+)
+
+createStroke(
+	AutoPickSwitch,
+	CONFIG.UI.STROKE,
+	2
+)
+
+AutoPickKnob =
+	Instance.new("Frame")
+
+AutoPickKnob.Size =
+	UDim2.fromOffset(
+		19,
+		19
+	)
+
+AutoPickKnob.Position =
+	UDim2.fromOffset(
+		3,
+		3
+	)
+
+AutoPickKnob.BackgroundColor3 =
+	CONFIG.UI.WHITE
+
+AutoPickKnob.Parent =
+	AutoPickSwitch
+
+createCorner(
+	AutoPickKnob,
+	10
+)
+
+--------------------------------------------------------
+-- SYSTEM INFO
+--------------------------------------------------------
+
+SystemLabel =
+	Instance.new("TextLabel")
+
+SystemLabel.BackgroundTransparency =
+	1
+
+SystemLabel.Position =
+	UDim2.fromOffset(
+		0,
+		140
+	)
+
+SystemLabel.Size =
+	UDim2.new(
+		1,
+		0,
+		0,
+		70
+	)
+
+SystemLabel.Font =
+	Enum.Font.Gotham
+
+SystemLabel.TextSize =
+	10
+
+SystemLabel.TextWrapped =
+	true
+
+SystemLabel.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+SystemLabel.TextYAlignment =
+	Enum.TextYAlignment.Top
+
+SystemLabel.TextColor3 =
+	CONFIG.UI.GREY
+
+SystemLabel.Text =
+	"System: V8.0\n"
+		.. "Hero Tracker: READY\n"
+		.. "First Sheriff Tracker: READY\n"
+		.. "Auto Pick: READY"
+
+SystemLabel.Parent =
+	FarmPage
+
+--------------------------------------------------------
+-- TAB SWITCH
+--------------------------------------------------------
+
+local function selectTab(tab)
+
+	if tab == "ESP" then
+
+		ESPPage.Visible =
+			true
+
+		FarmPage.Visible =
+			false
+
+		ESPButton.BackgroundColor3 =
+			CONFIG.UI.RED
+
+		ESPButton.TextColor3 =
+			CONFIG.UI.WHITE
+
+		FarmButton.BackgroundColor3 =
+			Color3.fromRGB(
+				27,
+				30,
+				37
+			)
+
+		FarmButton.TextColor3 =
+			CONFIG.UI.GREY
+
+	else
+
+		ESPPage.Visible =
+			false
+
+		FarmPage.Visible =
+			true
+
+		FarmButton.BackgroundColor3 =
+			CONFIG.UI.BLUE
+
+		FarmButton.TextColor3 =
+			CONFIG.UI.WHITE
+
+		ESPButton.BackgroundColor3 =
+			Color3.fromRGB(
+				27,
+				30,
+				37
+			)
+
+		ESPButton.TextColor3 =
+			CONFIG.UI.GREY
+	end
+end
+
+ESPButton.MouseButton1Click:Connect(
+	function()
+		selectTab("ESP")
+	end
+)
+
+FarmButton.MouseButton1Click:Connect(
+	function()
+		selectTab("FARM")
+	end
+)
+
+--------------------------------------------------------
+-- ESP TOGGLE
+--------------------------------------------------------
+
+ESPToggle.MouseButton1Click:Connect(
+	function()
+
+		CONFIG.ESP_ENABLED =
+			not CONFIG.ESP_ENABLED
+
+		if CONFIG.ESP_ENABLED then
+
+			ESPToggle.Text =
+				"ON"
+
+			ESPToggle.BackgroundColor3 =
+				CONFIG.UI.RED
+
+			ESPStatusLabel.Text =
+				"ESP ACTIVE"
+
+			for _, player in ipairs(
+				Players:GetPlayers()
+			) do
+
+				if player ~= LocalPlayer then
+					createESP(player)
+				end
+			end
+
+		else
+
+			ESPToggle.Text =
+				"OFF"
+
+			ESPToggle.BackgroundColor3 =
+				Color3.fromRGB(
+					50,
+					52,
+					58
+				)
+
+			ESPStatusLabel.Text =
+				"ESP DISABLED"
+
+			hardResetESP()
+		end
+	end
+)
+
+--------------------------------------------------------
+-- AUTO PICK TOGGLE
+--------------------------------------------------------
+
+AutoPickSwitch.MouseButton1Click:Connect(
+	function()
+
+		AutoPickEnabled =
+			not AutoPickEnabled
+
+		if AutoPickEnabled then
+
+			AutoPickSwitch.BackgroundColor3 =
+				CONFIG.UI.BLUE
+
+			AutoPickKnob.Position =
+				UDim2.new(
+					1,
+					-22,
+					0,
+					3
+				)
+
+			FarmStatusLabel.Text =
+				"Auto Pick Gun • ON"
+
+			SystemLabel.Text =
+				"System: V8.0\n"
+				.. "Hero Tracker: READY\n"
+				.. "First Sheriff Tracker: READY\n"
+				.. "Auto Pick: ON"
+
+		else
+
+			AutoPickSwitch.BackgroundColor3 =
+				Color3.fromRGB(
+					45,
+					48,
+					55
+				)
+
+			AutoPickKnob.Position =
+				UDim2.fromOffset(
+					3,
+					3
+				)
+
+			FarmStatusLabel.Text =
+				"Auto Pick Gun • OFF"
+
+			SystemLabel.Text =
+				"System: V8.0\n"
+				.. "Hero Tracker: READY\n"
+				.. "First Sheriff Tracker: READY\n"
+				.. "Auto Pick: OFF"
+		end
+	end
+)
+
+--------------------------------------------------------
+-- TOGGLE MAIN
+--------------------------------------------------------
+
+local function setMainVisible(visible)
+
+	MainOpen =
+		visible
+
+	if visible then
+
+		MainFrame.Visible =
+			true
+
+		MainFrame.Size =
+			UDim2.fromOffset(
+				420,
+				265
+			)
+
+		TweenService:Create(
+			MainFrame,
+			TweenInfo.new(
+				0.22,
+				Enum.EasingStyle.Back,
+				Enum.EasingDirection.Out
+			),
+			{
+				Size =
+					UDim2.fromOffset(
+						440,
+						280
+					)
+			}
+		):Play()
+
+	else
+
+		local tween =
+			TweenService:Create(
+				MainFrame,
+				TweenInfo.new(
+					0.18,
+					Enum.EasingStyle.Quad,
+					Enum.EasingDirection.In
+				),
+				{
+					Size =
+						UDim2.fromOffset(
+							400,
+							245
+						),
+
+					BackgroundTransparency =
+						1
+				}
+			)
+
+		tween:Play()
+
+		tween.Completed:Once(
+			function()
+
+				if not MainOpen then
+
+					MainFrame.Visible =
+						false
+
+					MainFrame.BackgroundTransparency =
+						0
+				end
+			end
+		)
+	end
+end
+
+ToggleButton.MouseButton1Click:Connect(
+	function()
+
+		setMainVisible(
+			not MainOpen
+		)
+
+		TweenService:Create(
+			ToggleButton,
+			TweenInfo.new(
+				0.12,
+				Enum.EasingStyle.Back,
+				Enum.EasingDirection.Out
+			),
+			{
+				Size =
+					UDim2.fromOffset(
+						58,
+						58
+					)
+			}
+		):Play()
+
+		task.delay(
+			0.12,
+			function()
+
+				TweenService:Create(
+					ToggleButton,
+					TweenInfo.new(
+						0.12,
+						Enum.EasingStyle.Back,
+						Enum.EasingDirection.Out
+					),
+					{
+						Size =
+							UDim2.fromOffset(
+								52,
+								52
+							)
+					}
+				):Play()
+			end
+		)
+	end
+)
+
+CloseButton.MouseButton1Click:Connect(
+	function()
+		setMainVisible(false)
+	end
+)
+
+--------------------------------------------------------
+-- HOVER ANIMATION
+--------------------------------------------------------
+
+local function hoverButton(button)
+
+	button.MouseEnter:Connect(
+		function()
+
+			TweenService:Create(
+				button,
+				TweenInfo.new(
+					0.12
+				),
+				{
+					BackgroundTransparency =
+						0
+				}
+			):Play()
+		end
+	)
+
+	button.MouseLeave:Connect(
+		function()
+
+			TweenService:Create(
+				button,
+				TweenInfo.new(
+					0.12
+				),
+				{
+					BackgroundTransparency =
+						0.05
+				}
+			):Play()
+		end
+	)
+end
+
+hoverButton(
+	ToggleButton
+)
+
+hoverButton(
+	ESPToggle
+)
+
+hoverButton(
+	AutoPickSwitch
+)
+
+--------------------------------------------------------
+-- INITIAL TAB
+--------------------------------------------------------
+
+selectTab("ESP")
+
+--------------------------------------------------------
+-- ROUND WATCHER
+--------------------------------------------------------
+
+task.spawn(function()
+
+	while MainGui.Parent do
+
+		local signature =
+			getRoundSignature()
+
+		if CurrentRoundSignature == nil then
+
+			CurrentRoundSignature =
+				signature
+
+		elseif signature
+			~= CurrentRoundSignature
+		then
+
+			CurrentRoundSignature =
+				signature
+
+			------------------------------------------------
+			-- NEW ROUND
+			------------------------------------------------
+
+			resetRoundMemory()
+
+			hardResetESP()
+
+			task.wait(0.2)
+
+			updateFirstSheriff()
+
+			updatePlayerList()
+		end
+
+		CurrentRoundState =
+			getFirstAttribute(
+				Workspace,
+				CONFIG.STATE_ATTRIBUTE_NAMES
+			)
+
+		task.wait(0.5)
+	end
+end)
+
+--------------------------------------------------------
+-- FIRST SHERIFF WATCHER
+--------------------------------------------------------
+
+task.spawn(function()
+
+	while MainGui.Parent do
+
+		updateFirstSheriff()
+
+		------------------------------------------------
+		-- CHECK FIRST SHERIFF STATUS
+		------------------------------------------------
+
+		if FirstSheriff then
+
+			local character =
+				FirstSheriff.Character
+
+			local humanoid =
+				getHumanoid(character)
+
+			if humanoid then
+
+				if humanoid.Health <= 0 then
+
+					if FirstSheriffAlive then
+						markSheriffDead(
+							FirstSheriff
+						)
+					end
+
+				else
+
+					if not FirstSheriffLeft then
+						FirstSheriffAlive = true
+					end
+				end
+			end
+		end
+
+		------------------------------------------------
+		-- LOOK FOR DROPPED HERO GUN
+		------------------------------------------------
+
+		if not FirstSheriffAlive
+			and FirstSheriff
+		then
+
+			local object, part =
+				findGunNearPosition(
+					EligibleHeroGunPosition
+				)
+
+			if object and part then
+				EligibleHeroGun =
+					object
+			end
+		end
+
+		task.wait(
+			CONFIG.GUN_SCAN_REFRESH
+		)
+	end
+end)
+
+--------------------------------------------------------
+-- ESP REFRESH
+--------------------------------------------------------
+
+task.spawn(function()
+
+	while MainGui.Parent do
+
+		if CONFIG.ESP_ENABLED then
+
+			for _, player in ipairs(
+				Players:GetPlayers()
+			) do
+
+				if player ~= LocalPlayer then
+
+					updateESP(player)
+				end
+			end
+		end
+
+		updatePlayerList()
+
+		task.wait(
+			CONFIG.ESP_REFRESH
+		)
+	end
+end)
+
+--------------------------------------------------------
+-- AUTO PICK LOOP
+--------------------------------------------------------
+
+task.spawn(function()
+
+	while MainGui.Parent do
+
+		if AutoPickEnabled then
+
+			autoPickGun()
+		end
+
+		task.wait(
+			CONFIG.GUN_SCAN_REFRESH
+		)
+	end
+end)
+
+--------------------------------------------------------
+-- LOCAL PLAYER ROLE WATCH
+--------------------------------------------------------
+
+task.spawn(function()
+
+	local lastRole = nil
+
+	while MainGui.Parent do
+
+		local role =
+			detectRole(
+				LocalPlayer
+			)
+
+		------------------------------------------------
+		-- IF SERVER SAYS HERO
+		------------------------------------------------
+
+		if getRoleAttribute(
+			LocalPlayer
+		) == "Hero"
+		then
+			PreviousRoles[LocalPlayer] =
+				"Hero"
+		end
+
+		------------------------------------------------
+		-- DETECT LEGITIMATE GUN PICKUP
+		------------------------------------------------
+
+		if localPlayerHasGun()
+			and role ~= "Sheriff"
+			and role ~= "Murderer"
+		then
+
+			if not FirstSheriffAlive
+				and FirstSheriff
+			then
+
+				PreviousRoles[LocalPlayer] =
+					"Hero"
+
+			end
+		end
+
+		if role ~= lastRole then
+
+			lastRole =
+				role
+
+			updatePlayerList()
+		end
+
+		task.wait(0.25)
+	end
+end)
+
+--------------------------------------------------------
+-- PLAYER CHARACTER REFRESH
+--------------------------------------------------------
+
+Players.PlayerAdded:Connect(function(player)
+
+	player.CharacterAdded:Connect(
+		function()
+
+			task.wait(0.35)
+
+			if CONFIG.ESP_ENABLED then
+				createESP(player)
+			end
+		end
+	)
+end)
+
+for _, player in ipairs(
+	Players:GetPlayers()
+) do
+
+	if player ~= LocalPlayer then
+
+		player.CharacterAdded:Connect(
+			function()
+
+				task.wait(0.35)
+
+				if CONFIG.ESP_ENABLED then
+					createESP(player)
+				end
+			end
+		)
+
+		player.CharacterRemoving:Connect(
+			function()
+
+				removeESP(player)
+			end
+		)
+	end
+end
+
+--------------------------------------------------------
+-- FINAL STATUS
+--------------------------------------------------------
+
+SystemLabel.Text =
+	"System: "
+		.. CONFIG.VERSION
+		.. "\n"
+		.. "Hero Tracker: READY\n"
+		.. "First Sheriff Tracker: READY\n"
+		.. "Auto Pick: OFF"
+
+print(
+	"[KYZEN PERKS] "
+		.. CONFIG.VERSION
+		.. " loaded successfully."
+)
+
+print(
+	"[KYZEN PERKS] First Sheriff + Hero system ready."
+)
+
+print(
+	"[KYZEN PERKS] Auto Pick system ready."
+)
+
+--------------------------------------------------------
+-- END
+--------------------------------------------------------
