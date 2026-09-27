@@ -1,0 +1,3940 @@
+--[[
+========================================================
+                  KYZEN PERKS
+             SHERIFF MYSTERY SYSTEM
+                    VERSION V11
+========================================================
+
+V11
+* FIX  - Sheriff / Hero / Innocent / Murderer detection
+* FIX  - Role detection priority
+* FIX  - Round role reset
+* FIX  - ESP duplicate cleanup
+* FIX  - ESP refresh every second
+* FIX  - Pre-round role detection
+* FIX  - Player ESP positioning
+* FIX  - Highlight role colors
+* ADD  - X close button
+* ADD  - Scrollable ESP player list
+* ADD  - Scrollable update history
+* ADD  - Saved V10 + V11 update history
+* ADD  - Better red / blue interface
+* REMOVE - Loading GUI
+* REMOVE - Notify GUI
+========================================================
+]]
+
+--====================================================--
+-- SERVICES
+--====================================================--
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+--====================================================--
+-- VERSION
+--====================================================--
+
+local VERSION = "V11"
+
+--====================================================--
+-- CONFIG
+--====================================================--
+
+local CONFIG = {
+	ESP_ENABLED = true,
+
+	ESP_REFRESH = 1,
+
+	MAIN_WIDTH = 540,
+	MAIN_HEIGHT = 355,
+
+	SIDEBAR_WIDTH = 112,
+
+	TOGGLE_SIZE = 54,
+
+	MAX_ESP_DISTANCE = 1500,
+}
+
+--====================================================--
+-- COLORS
+--====================================================--
+
+local COLORS = {
+	Black = Color3.fromRGB(3, 4, 7),
+
+	Background = Color3.fromRGB(9, 11, 17),
+
+	Panel = Color3.fromRGB(14, 18, 28),
+
+	Panel2 = Color3.fromRGB(20, 25, 38),
+
+	Panel3 = Color3.fromRGB(25, 31, 46),
+
+	White = Color3.fromRGB(245, 248, 255),
+
+	Light = Color3.fromRGB(190, 198, 215),
+
+	Gray = Color3.fromRGB(105, 115, 135),
+
+	Blue = Color3.fromRGB(55, 130, 255),
+
+	BlueBright = Color3.fromRGB(80, 155, 255),
+
+	BlueDark = Color3.fromRGB(24, 67, 150),
+
+	Red = Color3.fromRGB(235, 55, 70),
+
+	RedBright = Color3.fromRGB(255, 70, 80),
+
+	RedDark = Color3.fromRGB(125, 28, 40),
+
+	Murderer = Color3.fromRGB(255, 65, 75),
+
+	Sheriff = Color3.fromRGB(65, 145, 255),
+
+	Hero = Color3.fromRGB(255, 215, 65),
+
+	Innocent = Color3.fromRGB(75, 220, 125),
+}
+
+--====================================================--
+-- STATE
+--====================================================--
+
+local ESPEnabled = CONFIG.ESP_ENABLED
+
+local MainOpen = true
+
+local ActiveTab = "ESP"
+
+local RoundSignature = ""
+
+local LastRoundSignature = ""
+
+local RoundFirstSheriffUserId = nil
+
+local CurrentGunHolderUserId = nil
+
+local LastGunHolderUserId = nil
+
+local LastGunDropCFrame = nil
+
+local PlayerRoles = {}
+
+local ESPObjects = {}
+
+local UpdateHistory = {
+	{
+		Version = "V11",
+		Items = {
+			{"FIX", "Sheriff / Hero / Innocent / Murderer role detection"},
+			{"FIX", "Round role reset and one-second ESP refresh"},
+			{"FIX", "Duplicate ESP cleanup"},
+			{"FIX", "Player ESP position and role colors"},
+			{"ADD", "Pre-round role detection"},
+			{"ADD", "X close button"},
+			{"ADD", "Scrollable ESP player list"},
+			{"ADD", "Scrollable update history"},
+			{"ADD", "Red + blue UI polish"},
+		}
+	},
+
+	{
+		Version = "V10",
+		Items = {
+			{"FIX", "ESP player label positioning"},
+			{"FIX", "Role colors and highlight synchronization"},
+			{"FIX", "ESP cleanup after death and respawn"},
+			{"FIX", "Centered balanced GUI"},
+			{"ADD", "Round-based Sheriff to Hero tracking"},
+			{"ADD", "Dropped-gun target scanning"},
+			{"ADD", "Expandable update version panel"},
+			{"ADD", "Animated red + blue interface"},
+		}
+	},
+}
+
+--====================================================--
+-- UTILITY
+--====================================================--
+
+local function create(className, properties, parent)
+
+	local object = Instance.new(className)
+
+	for property, value in pairs(properties or {}) do
+		pcall(function()
+			object[property] = value
+		end)
+	end
+
+	if parent then
+		object.Parent = parent
+	end
+
+	return object
+end
+
+local function destroy(object)
+
+	if object then
+		pcall(function()
+			object:Destroy()
+		end)
+	end
+end
+
+local function corner(object, radius)
+
+	local c = Instance.new("UICorner")
+
+	c.CornerRadius = UDim.new(0, radius or 8)
+
+	c.Parent = object
+
+	return c
+end
+
+local function stroke(object, color, thickness, transparency)
+
+	local s = Instance.new("UIStroke")
+
+	s.Color = color or COLORS.Black
+
+	s.Thickness = thickness or 1
+
+	s.Transparency = transparency or 0
+
+	s.Parent = object
+
+	return s
+end
+
+local function gradient(object, color1, color2, rotation)
+
+	local g = Instance.new("UIGradient")
+
+	g.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, color1),
+		ColorSequenceKeypoint.new(1, color2),
+	})
+
+	g.Rotation = rotation or 90
+
+	g.Parent = object
+
+	return g
+end
+
+local function tween(object, properties, time)
+
+	if not object then
+		return
+	end
+
+	local success, animation = pcall(function()
+
+		return TweenService:Create(
+			object,
+
+			TweenInfo.new(
+				time or 0.18,
+				Enum.EasingStyle.Quart,
+				Enum.EasingDirection.Out
+			),
+
+			properties
+		)
+
+	end)
+
+	if success and animation then
+		animation:Play()
+	end
+end
+
+--====================================================--
+-- ROLE NORMALIZATION
+--====================================================--
+
+local function normalizeRole(value)
+
+	if typeof(value) ~= "string" then
+		return nil
+	end
+
+	local role = string.lower(value)
+
+	role = role:gsub("%s+", "")
+	role = role:gsub("_", "")
+	role = role:gsub("-", "")
+
+	if role == "murderer"
+		or role == "murder"
+		or role == "killer"
+		or role == "mmurderer" then
+
+		return "Murderer"
+
+	elseif role == "sheriff"
+		or role == "cop"
+		or role == "police" then
+
+		return "Sheriff"
+
+	elseif role == "hero" then
+
+		return "Hero"
+
+	elseif role == "innocent"
+		or role == "civilian"
+		or role == "citizen"
+		or role == "survivor" then
+
+		return "Innocent"
+	end
+
+	return nil
+end
+
+--====================================================--
+-- SERVER ROLE ATTRIBUTES
+--====================================================--
+
+local ROLE_ATTRIBUTES = {
+	"Role",
+	"PlayerRole",
+	"CurrentRole",
+	"RoleName",
+	"GameRole",
+	"RoundRole",
+	"TeamRole",
+	"RoleType",
+	"CharacterRole",
+}
+
+local function getAttributeRole(player)
+
+	for _, attributeName in ipairs(ROLE_ATTRIBUTES) do
+
+		local value = player:GetAttribute(attributeName)
+
+		local role = normalizeRole(value)
+
+		if role then
+			return role
+		end
+	end
+
+	-- Character attributes.
+	local character = player.Character
+
+	if character then
+
+		for _, attributeName in ipairs(ROLE_ATTRIBUTES) do
+
+			local value = character:GetAttribute(attributeName)
+
+			local role = normalizeRole(value)
+
+			if role then
+				return role
+			end
+		end
+	end
+
+	return nil
+end
+
+--====================================================--
+-- TEAM ROLE
+--====================================================--
+
+local function getTeamRole(player)
+
+	if not player.Team then
+		return nil
+	end
+
+	return normalizeRole(player.Team.Name)
+end
+
+--====================================================--
+-- TOOL DETECTION
+--====================================================--
+
+local function getToolRole(tool)
+
+	if not tool then
+		return nil
+	end
+
+	-- Attributes first.
+	for _, attributeName in ipairs(ROLE_ATTRIBUTES) do
+
+		local value = tool:GetAttribute(attributeName)
+
+		local role = normalizeRole(value)
+
+		if role then
+			return role
+		end
+	end
+
+	local name = string.lower(tool.Name or "")
+
+	-- Murderer-specific names.
+	if string.find(name, "knife", 1, true)
+		or string.find(name, "blade", 1, true)
+		or string.find(name, "dagger", 1, true)
+		or string.find(name, "murderer", 1, true) then
+
+		return "Murderer"
+	end
+
+	-- Sheriff gun names.
+	if string.find(name, "sheriff", 1, true)
+		or string.find(name, "gun", 1, true)
+		or string.find(name, "pistol", 1, true)
+		or string.find(name, "revolver", 1, true) then
+
+		return "Sheriff"
+	end
+
+	return nil
+end
+
+local function getToolRoleFromContainer(container)
+
+	if not container then
+		return nil
+	end
+
+	for _, child in ipairs(container:GetChildren()) do
+
+		if child:IsA("Tool") then
+
+			local role = getToolRole(child)
+
+			if role then
+				return role
+			end
+		end
+	end
+
+	return nil
+end
+
+--====================================================--
+-- ROUND SHERIFF / HERO TRACKING
+--====================================================--
+
+local function registerGunHolder(player)
+
+	if not player then
+		return
+	end
+
+	if RoundFirstSheriffUserId == nil then
+
+		RoundFirstSheriffUserId = player.UserId
+
+		CurrentGunHolderUserId = player.UserId
+
+		return "Sheriff"
+	end
+
+	if RoundFirstSheriffUserId == player.UserId then
+
+		CurrentGunHolderUserId = player.UserId
+
+		return "Sheriff"
+	end
+
+	CurrentGunHolderUserId = player.UserId
+
+	return "Hero"
+end
+
+--====================================================--
+-- ROLE DETECTION
+--====================================================--
+
+local function detectRole(player)
+
+	if not player then
+		return "Innocent", "Default"
+	end
+
+	--================================================--
+	-- 1. SERVER ATTRIBUTE
+	--================================================--
+
+	local attributeRole = getAttributeRole(player)
+
+	if attributeRole then
+
+		if attributeRole == "Sheriff" then
+
+			if RoundFirstSheriffUserId == nil then
+				RoundFirstSheriffUserId = player.UserId
+			end
+
+			CurrentGunHolderUserId = player.UserId
+		end
+
+		PlayerRoles[player.UserId] = attributeRole
+
+		return attributeRole, "Attribute"
+	end
+
+	--================================================--
+	-- 2. TEAM
+	--================================================--
+
+	local teamRole = getTeamRole(player)
+
+	if teamRole then
+
+		if teamRole == "Sheriff" then
+
+			if RoundFirstSheriffUserId == nil then
+				RoundFirstSheriffUserId = player.UserId
+			end
+
+			CurrentGunHolderUserId = player.UserId
+		end
+
+		PlayerRoles[player.UserId] = teamRole
+
+		return teamRole, "Team"
+	end
+
+	--================================================--
+	-- 3. CHARACTER TOOL
+	--================================================--
+
+	local character = player.Character
+
+	local characterToolRole =
+		getToolRoleFromContainer(character)
+
+	if characterToolRole == "Murderer" then
+
+		PlayerRoles[player.UserId] = "Murderer"
+
+		return "Murderer", "Tool"
+	end
+
+	if characterToolRole == "Sheriff" then
+
+		local role = registerGunHolder(player)
+
+		PlayerRoles[player.UserId] = role
+
+		return role, "Gun"
+	end
+
+	--================================================--
+	-- 4. BACKPACK TOOL
+	--================================================--
+
+	local backpack =
+		player:FindFirstChildOfClass("Backpack")
+
+	local backpackRole =
+		getToolRoleFromContainer(backpack)
+
+	if backpackRole == "Murderer" then
+
+		PlayerRoles[player.UserId] = "Murderer"
+
+		return "Murderer", "Backpack"
+	end
+
+	if backpackRole == "Sheriff" then
+
+		local role = registerGunHolder(player)
+
+		PlayerRoles[player.UserId] = role
+
+		return role, "BackpackGun"
+	end
+
+	--================================================--
+	-- 5. KEEP KNOWN ROLE DURING ROUND
+	--================================================--
+
+	local knownRole = PlayerRoles[player.UserId]
+
+	if knownRole then
+
+		-- Don't keep a dead role forever.
+		if character then
+
+			local humanoid =
+				character:FindFirstChildOfClass("Humanoid")
+
+			if humanoid and humanoid.Health > 0 then
+
+				return knownRole, "Known"
+			end
+		end
+	end
+
+	--================================================--
+	-- 6. DEFAULT
+	--================================================--
+
+	PlayerRoles[player.UserId] = "Innocent"
+
+	return "Innocent", "Default"
+end
+
+--====================================================--
+-- ROUND DETECTION
+--====================================================--
+
+local ROUND_ATTRIBUTES = {
+	"RoundId",
+	"Round",
+	"RoundNumber",
+	"GameRound",
+	"MatchId",
+	"MatchNumber",
+	"CurrentRound",
+	"RoundState",
+	"GameState",
+	"Phase",
+}
+
+local function findRoundValue(root)
+
+	for _, attributeName in ipairs(ROUND_ATTRIBUTES) do
+
+		local value = root:GetAttribute(attributeName)
+
+		if value ~= nil then
+
+			return attributeName .. ":" .. tostring(value)
+		end
+	end
+
+	return nil
+end
+
+local function getRoundSignature()
+
+	local workspaceRound =
+		findRoundValue(Workspace)
+
+	if workspaceRound then
+		return "Workspace|" .. workspaceRound
+	end
+
+	local replicatedRound =
+		findRoundValue(ReplicatedStorage)
+
+	if replicatedRound then
+		return "ReplicatedStorage|" .. replicatedRound
+	end
+
+	-- Search common replicated values.
+	for _, root in ipairs({
+		Workspace,
+		ReplicatedStorage
+	}) do
+
+		for _, object in ipairs(root:GetDescendants()) do
+
+			if object:IsA("StringValue")
+				or object:IsA("IntValue")
+				or object:IsA("NumberValue") then
+
+				local name =
+					string.lower(object.Name)
+
+				if name == "round"
+					or name == "roundid"
+					or name == "roundnumber"
+					or name == "gameround"
+					or name == "currentround"
+					or name == "roundstate"
+					or name == "gamestate"
+					or name == "phase" then
+
+					return
+						object:GetFullName()
+						.. ":"
+						.. tostring(object.Value)
+				end
+			end
+		end
+	end
+
+	return ""
+end
+
+local function resetRound()
+
+	RoundFirstSheriffUserId = nil
+
+	CurrentGunHolderUserId = nil
+
+	LastGunHolderUserId = nil
+
+	LastGunDropCFrame = nil
+
+	table.clear(PlayerRoles)
+
+	-- Completely remove old ESP.
+	for player in pairs(ESPObjects) do
+
+		local data = ESPObjects[player]
+
+		if data then
+
+			destroy(data.Highlight)
+
+			destroy(data.Billboard)
+
+			destroy(data.Folder)
+
+		end
+
+	end
+
+	table.clear(ESPObjects)
+end
+
+local function checkRound()
+
+	local signature =
+		getRoundSignature()
+
+	if signature ~= ""
+		and signature ~= LastRoundSignature then
+
+		LastRoundSignature = signature
+
+		RoundSignature = signature
+
+		resetRound()
+	end
+end
+
+--====================================================--
+-- ESP COLOR
+--====================================================--
+
+local function getRoleColor(role)
+
+	if role == "Murderer" then
+		return COLORS.Murderer
+
+	elseif role == "Sheriff" then
+		return COLORS.Sheriff
+
+	elseif role == "Hero" then
+		return COLORS.Hero
+
+	else
+		return COLORS.Innocent
+	end
+end
+
+--====================================================--
+-- CHARACTER ROOT
+--====================================================--
+
+local function getRoot(player)
+
+	local character = player.Character
+
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChild("HumanoidRootPart")
+		or character:FindFirstChild("UpperTorso")
+		or character:FindFirstChild("Torso")
+end
+
+--====================================================--
+-- CLEAR ESP
+--====================================================--
+
+local function clearESP(player)
+
+	local data = ESPObjects[player]
+
+	if not data then
+		return
+	end
+
+	destroy(data.Highlight)
+
+	destroy(data.Billboard)
+
+	destroy(data.Folder)
+
+	ESPObjects[player] = nil
+end
+
+--====================================================--
+-- CREATE ESP
+--====================================================--
+
+local function createESP(player)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	local character = player.Character
+
+	if not character then
+		return
+	end
+
+	local root = getRoot(player)
+
+	if not root then
+		return
+	end
+
+	clearESP(player)
+
+	local folder = create(
+		"Folder",
+		{
+			Name = "KYZEN_ESP",
+		},
+		character
+	)
+
+	--================================================--
+	-- HIGHLIGHT
+	--================================================--
+
+	local highlight = create(
+		"Highlight",
+		{
+			Name = "RoleHighlight",
+
+			Adornee = character,
+
+			DepthMode =
+				Enum.HighlightDepthMode.AlwaysOnTop,
+
+			FillTransparency = 0.82,
+
+			OutlineTransparency = 0,
+
+			Enabled = ESPEnabled,
+		},
+		folder
+	)
+
+	--================================================--
+	-- BILLBOARD
+	--================================================--
+
+	local billboard = create(
+		"BillboardGui",
+		{
+			Name = "PlayerESP",
+
+			Adornee = root,
+
+			Size = UDim2.fromOffset(
+				235,
+				58
+			),
+
+			StudsOffset =
+				Vector3.new(
+					0,
+					3.0,
+					0
+				),
+
+			AlwaysOnTop = true,
+
+			MaxDistance =
+				CONFIG.MAX_ESP_DISTANCE,
+
+			LightInfluence = 0,
+
+			Enabled = ESPEnabled,
+		},
+		folder
+	)
+
+	local frame = create(
+		"Frame",
+		{
+			Size = UDim2.fromScale(1, 1),
+
+			BackgroundColor3 =
+				COLORS.Black,
+
+			BackgroundTransparency =
+				0.30,
+
+			BorderSizePixel = 0,
+		},
+		billboard
+	)
+
+	corner(frame, 8)
+
+	stroke(
+		frame,
+		COLORS.Black,
+		2,
+		0
+	)
+
+	local accent = create(
+		"Frame",
+		{
+			Position =
+				UDim2.fromOffset(0, 0),
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					0,
+					3
+				),
+
+			BackgroundColor3 =
+				COLORS.Blue,
+
+			BorderSizePixel = 0,
+		},
+		frame
+	)
+
+	corner(accent, 8)
+
+	--================================================--
+	-- DISPLAY NAME
+	--================================================--
+
+	local nameLabel = create(
+		"TextLabel",
+		{
+			BackgroundTransparency = 1,
+
+			Position =
+				UDim2.fromOffset(
+					9,
+					6
+				),
+
+			Size =
+				UDim2.new(
+					1,
+					-18,
+					0,
+					19
+				),
+
+			Font =
+				Enum.Font.GothamBold,
+
+			Text =
+				player.DisplayName,
+
+			TextSize = 13,
+
+			TextColor3 =
+				COLORS.White,
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+
+			TextTruncate =
+				Enum.TextTruncate.AtEnd,
+		},
+		frame
+	)
+
+	--================================================--
+	-- USER / ROLE / DISTANCE
+	--================================================--
+
+	local infoLabel = create(
+		"TextLabel",
+		{
+			BackgroundTransparency = 1,
+
+			Position =
+				UDim2.fromOffset(
+					9,
+					26
+				),
+
+			Size =
+				UDim2.new(
+					1,
+					-18,
+					0,
+					21
+				),
+
+			Font =
+				Enum.Font.GothamSemibold,
+
+			TextSize = 10,
+
+			TextColor3 =
+				COLORS.Light,
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+
+			TextTruncate =
+				Enum.TextTruncate.AtEnd,
+		},
+		frame
+	)
+
+	ESPObjects[player] = {
+		Folder = folder,
+
+		Highlight = highlight,
+
+		Billboard = billboard,
+
+		Frame = frame,
+
+		Accent = accent,
+
+		NameLabel = nameLabel,
+
+		InfoLabel = infoLabel,
+	}
+end
+
+--====================================================--
+-- UPDATE ESP
+--====================================================--
+
+local function updateESP(player)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	if not ESPEnabled then
+
+		clearESP(player)
+
+		return
+	end
+
+	local character =
+		player.Character
+
+	if not character then
+
+		clearESP(player)
+
+		return
+	end
+
+	local humanoid =
+		character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if not humanoid
+		or humanoid.Health <= 0 then
+
+		clearESP(player)
+
+		return
+	end
+
+	local root =
+		getRoot(player)
+
+	if not root then
+
+		clearESP(player)
+
+		return
+	end
+
+	-- Ensure only ONE ESP exists.
+	local data =
+		ESPObjects[player]
+
+	if not data
+		or not data.Folder
+		or data.Folder.Parent ~= character then
+
+		createESP(player)
+
+		data =
+			ESPObjects[player]
+	end
+
+	if not data then
+		return
+	end
+
+	local role =
+		select(
+			1,
+			detectRole(player)
+		)
+
+	local roleColor =
+		getRoleColor(role)
+
+	-- Highlight.
+	data.Highlight.Enabled = true
+
+	data.Highlight.FillColor =
+		roleColor
+
+	data.Highlight.OutlineColor =
+		roleColor
+
+	data.Highlight.FillTransparency =
+		0.82
+
+	data.Highlight.OutlineTransparency =
+		0
+
+	-- Billboard.
+	data.Billboard.Enabled =
+		ESPEnabled
+
+	data.Accent.BackgroundColor3 =
+		roleColor
+
+	data.NameLabel.Text =
+		player.DisplayName
+
+	local localRoot =
+		getRoot(LocalPlayer)
+
+	local distanceText =
+		"— studs"
+
+	if localRoot then
+
+		local distance =
+			(root.Position
+				- localRoot.Position).Magnitude
+
+		distanceText =
+			tostring(
+				math.floor(
+					distance + 0.5
+				)
+			)
+			.. " studs"
+	end
+
+	data.InfoLabel.Text =
+		"@"
+		.. player.Name
+		.. "  •  "
+		.. role
+		.. "  •  "
+		.. distanceText
+
+	data.InfoLabel.TextColor3 =
+		roleColor
+end
+
+--====================================================--
+-- DUPLICATE CLEANUP
+--====================================================--
+
+local function removeDuplicateESP(player)
+
+	local character =
+		player.Character
+
+	if not character then
+		return
+	end
+
+	local found = false
+
+	for _, child in ipairs(
+		character:GetChildren()
+	) do
+
+		if child.Name == "KYZEN_ESP" then
+
+			if found then
+
+				destroy(child)
+
+			else
+
+				found = true
+			end
+		end
+	end
+end
+
+--====================================================--
+-- REFRESH ALL ESP
+--====================================================--
+
+local function refreshESP()
+
+	if not ESPEnabled then
+
+		for player in pairs(ESPObjects) do
+			clearESP(player)
+		end
+
+		return
+	end
+
+	for _, player in ipairs(
+		Players:GetPlayers()
+	) do
+
+		if player ~= LocalPlayer then
+
+			removeDuplicateESP(player)
+
+			updateESP(player)
+		end
+	end
+
+	-- Remove ESP of players that no longer exist.
+	for player in pairs(ESPObjects) do
+
+		if not player.Parent then
+			clearESP(player)
+		end
+	end
+end
+
+--====================================================--
+-- GUI CLEANUP
+--====================================================--
+
+local oldGui =
+	PlayerGui:FindFirstChild(
+		"KYZEN_PERKS_V11"
+	)
+
+if oldGui then
+	oldGui:Destroy()
+end
+
+--====================================================--
+-- SCREEN GUI
+--====================================================--
+
+local ScreenGui = create(
+	"ScreenGui",
+	{
+		Name = "KYZEN_PERKS_V11",
+
+		ResetOnSpawn = false,
+
+		IgnoreGuiInset = true,
+
+		ZIndexBehavior =
+			Enum.ZIndexBehavior.Sibling,
+	},
+	PlayerGui
+)
+
+--====================================================--
+-- SCALE
+--====================================================--
+
+local UIScale = create(
+	"UIScale",
+	{
+		Scale = 1,
+	},
+	ScreenGui
+)
+
+local function updateScale()
+
+	local camera =
+		Workspace.CurrentCamera
+
+	if not camera then
+		return
+	end
+
+	local size =
+		camera.ViewportSize
+
+	local scale =
+		math.min(
+			size.X / 980,
+			size.Y / 690
+		)
+
+	scale =
+		math.clamp(
+			scale,
+			0.70,
+			1
+		)
+
+	UIScale.Scale =
+		scale
+end
+
+updateScale()
+
+if Workspace.CurrentCamera then
+
+	Workspace.CurrentCamera
+		:GetPropertyChangedSignal(
+			"ViewportSize"
+		)
+		:Connect(updateScale)
+
+end
+
+--====================================================--
+-- MAIN
+--====================================================--
+
+local MainFrame = create(
+	"Frame",
+	{
+		Name = "Main",
+
+		AnchorPoint =
+			Vector2.new(
+				0.5,
+				0.5
+			),
+
+		Position =
+			UDim2.fromScale(
+				0.5,
+				0.5
+			),
+
+		Size =
+			UDim2.fromOffset(
+				CONFIG.MAIN_WIDTH,
+				CONFIG.MAIN_HEIGHT
+			),
+
+		BackgroundColor3 =
+			COLORS.Background,
+
+		BorderSizePixel = 0,
+	},
+	ScreenGui
+)
+
+corner(MainFrame, 15)
+
+stroke(
+	MainFrame,
+	COLORS.Black,
+	3,
+	0
+)
+
+gradient(
+	MainFrame,
+	Color3.fromRGB(15, 20, 32),
+	Color3.fromRGB(7, 9, 14),
+	90
+)
+
+--====================================================--
+-- TOP LINE
+--====================================================--
+
+local TopLine = create(
+	"Frame",
+	{
+		Size =
+			UDim2.new(
+				1,
+				0,
+				0,
+				4
+			),
+
+		BackgroundColor3 =
+			COLORS.Blue,
+
+		BorderSizePixel = 0,
+	},
+	MainFrame
+)
+
+gradient(
+	TopLine,
+	COLORS.Blue,
+	COLORS.Red,
+	0
+)
+
+--====================================================--
+-- HEADER
+--====================================================--
+
+local Header = create(
+	"Frame",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				16,
+				9
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-32,
+				0,
+				42
+			),
+	},
+	MainFrame
+)
+
+local Title = create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Size =
+			UDim2.new(
+				1,
+				-100,
+				0,
+				24
+			),
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			"KYZEN PERKS",
+
+		TextSize = 20,
+
+		TextColor3 =
+			COLORS.White,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	Header
+)
+
+local Subtitle = create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				1,
+				23
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-100,
+				0,
+				16
+			),
+
+		Font =
+			Enum.Font.GothamSemibold,
+
+		Text =
+			"SHERIFF MYSTERY  •  DEV TEST",
+
+		TextSize = 9,
+
+		TextColor3 =
+			COLORS.Gray,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	Header
+)
+
+--====================================================--
+-- X BUTTON
+--====================================================--
+
+local CloseButton = create(
+	"TextButton",
+	{
+		Name = "Close",
+
+		AnchorPoint =
+			Vector2.new(
+				1,
+				0
+			),
+
+		Position =
+			UDim2.new(
+				1,
+				0,
+				0,
+				0
+			),
+
+		Size =
+			UDim2.fromOffset(
+				30,
+				30
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		BorderSizePixel = 0,
+
+		AutoButtonColor = false,
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text = "×",
+
+		TextSize = 20,
+
+		TextColor3 =
+			COLORS.Light,
+	},
+	Header
+)
+
+corner(CloseButton, 8)
+
+stroke(
+	CloseButton,
+	COLORS.Black,
+	2,
+	0
+)
+
+CloseButton.MouseEnter:Connect(function()
+
+	tween(
+		CloseButton,
+		{
+			BackgroundColor3 =
+				COLORS.RedDark,
+
+			TextColor3 =
+				COLORS.White,
+		},
+		0.12
+	)
+
+end)
+
+CloseButton.MouseLeave:Connect(function()
+
+	tween(
+		CloseButton,
+		{
+			BackgroundColor3 =
+				COLORS.Panel2,
+
+			TextColor3 =
+				COLORS.Light,
+		},
+		0.12
+	)
+
+end)
+
+--====================================================--
+-- VERSION
+--====================================================--
+
+local Version = create(
+	"TextLabel",
+	{
+		AnchorPoint =
+			Vector2.new(
+				1,
+				0
+			),
+
+		Position =
+			UDim2.new(
+				1,
+				-38,
+				0,
+				3
+			),
+
+		Size =
+			UDim2.fromOffset(
+				58,
+				24
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			VERSION,
+
+		TextSize = 10,
+
+		TextColor3 =
+			COLORS.Blue,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Center,
+	},
+	Header
+)
+
+corner(Version, 6)
+
+stroke(
+	Version,
+	COLORS.Blue,
+	1,
+	0.25
+)
+
+--====================================================--
+-- SIDEBAR
+--====================================================--
+
+local Sidebar = create(
+	"Frame",
+	{
+		Position =
+			UDim2.fromOffset(
+				12,
+				60
+			),
+
+		Size =
+			UDim2.new(
+				0,
+				CONFIG.SIDEBAR_WIDTH,
+				1,
+				-72
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel,
+
+		BorderSizePixel = 0,
+	},
+	MainFrame
+)
+
+corner(Sidebar, 11)
+
+stroke(
+	Sidebar,
+	COLORS.Black,
+	2,
+	0
+)
+
+--====================================================--
+-- CONTENT
+--====================================================--
+
+local Content = create(
+	"Frame",
+	{
+		Position =
+			UDim2.new(
+				0,
+				CONFIG.SIDEBAR_WIDTH + 21,
+				0,
+				60
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-(CONFIG.SIDEBAR_WIDTH + 33),
+				1,
+				-72
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel,
+
+		BorderSizePixel = 0,
+	},
+	MainFrame
+)
+
+corner(Content, 11)
+
+stroke(
+	Content,
+	COLORS.Black,
+	2,
+	0
+)
+
+--====================================================--
+-- TABS
+--====================================================--
+
+local Tabs = create(
+	"Frame",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				7,
+				8
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-14,
+				1,
+				-16
+			),
+	},
+	Sidebar
+)
+
+local TabLayout = create(
+	"UIListLayout",
+	{
+		Padding =
+			UDim.new(
+				0,
+				7
+			),
+
+		HorizontalAlignment =
+			Enum.HorizontalAlignment.Center,
+
+		SortOrder =
+			Enum.SortOrder.LayoutOrder,
+	},
+	Tabs
+)
+
+local function makeTab(name, text)
+
+	local button = create(
+		"TextButton",
+		{
+			Name = name,
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					0,
+					43
+				),
+
+			BackgroundColor3 =
+				COLORS.Panel2,
+
+			BorderSizePixel = 0,
+
+			AutoButtonColor = false,
+
+			Font =
+				Enum.Font.GothamBold,
+
+			Text = text,
+
+			TextSize = 10,
+
+			TextColor3 =
+				COLORS.Light,
+		},
+		Tabs
+	)
+
+	corner(button, 8)
+
+	stroke(
+		button,
+		COLORS.Black,
+		2,
+		0
+	)
+
+	return button
+end
+
+local ESPTab =
+	makeTab(
+		"ESP",
+		"ESP"
+	)
+
+local FarmTab =
+	makeTab(
+		"FARM",
+		"FARM"
+	)
+
+local UpdatesTab =
+	makeTab(
+		"UPDATES",
+		"UPDATES"
+	)
+
+--====================================================--
+-- PAGES
+--====================================================--
+
+local ESPPage = create(
+	"Frame",
+	{
+		Size =
+			UDim2.fromScale(
+				1,
+				1
+			),
+
+		BackgroundTransparency = 1,
+
+		Visible = true,
+	},
+	Content
+)
+
+local FarmPage = create(
+	"Frame",
+	{
+		Size =
+			UDim2.fromScale(
+				1,
+				1
+			),
+
+		BackgroundTransparency = 1,
+
+		Visible = false,
+	},
+	Content
+)
+
+local UpdatesPage = create(
+	"Frame",
+	{
+		Size =
+			UDim2.fromScale(
+				1,
+				1
+			),
+
+		BackgroundTransparency = 1,
+
+		Visible = false,
+	},
+	Content
+)
+
+--====================================================--
+-- PAGE TITLE
+--====================================================--
+
+local function pageTitle(parent, title, description)
+
+	create(
+		"TextLabel",
+		{
+			BackgroundTransparency = 1,
+
+			Position =
+				UDim2.fromOffset(
+					15,
+					11
+				),
+
+			Size =
+				UDim2.new(
+					1,
+					-30,
+					0,
+					22
+				),
+
+			Font =
+				Enum.Font.GothamBold,
+
+			Text =
+				title,
+
+			TextSize = 16,
+
+			TextColor3 =
+				COLORS.White,
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+		},
+		parent
+	)
+
+	create(
+		"TextLabel",
+		{
+			BackgroundTransparency = 1,
+
+			Position =
+				UDim2.fromOffset(
+					15,
+					33
+				),
+
+			Size =
+				UDim2.new(
+					1,
+					-30,
+					0,
+					17
+				),
+
+			Font =
+				Enum.Font.GothamMedium,
+
+			Text =
+				description,
+
+			TextSize = 8,
+
+			TextColor3 =
+				COLORS.Gray,
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+		},
+		parent
+	)
+end
+
+pageTitle(
+	ESPPage,
+	"PLAYER ESP",
+	"Live role detection • distance • username"
+)
+
+pageTitle(
+	FarmPage,
+	"FARM",
+	"Private development testing"
+)
+
+pageTitle(
+	UpdatesPage,
+	"UPDATE LOG",
+	"Version history and latest changes"
+)
+
+--====================================================--
+-- ESP TOGGLE
+--====================================================--
+
+local ESPToggle = create(
+	"TextButton",
+	{
+		Position =
+			UDim2.fromOffset(
+				15,
+				60
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-30,
+				0,
+				43
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		BorderSizePixel = 0,
+
+		AutoButtonColor = false,
+
+		Text = "",
+	},
+	ESPPage
+)
+
+corner(ESPToggle, 8)
+
+stroke(
+	ESPToggle,
+	COLORS.Black,
+	2,
+	0
+)
+
+create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				12,
+				5
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-80,
+				0,
+				17
+			),
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			"PLAYER ESP",
+
+		TextSize = 10,
+
+		TextColor3 =
+			COLORS.White,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	ESPToggle
+)
+
+create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				12,
+				21
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-80,
+				0,
+				14
+			),
+
+		Font =
+			Enum.Font.GothamMedium,
+
+		Text =
+			"Refreshes every second",
+
+		TextSize = 8,
+
+		TextColor3 =
+			COLORS.Gray,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	ESPToggle
+)
+
+local ESPSwitch = create(
+	"Frame",
+	{
+		AnchorPoint =
+			Vector2.new(
+				1,
+				0.5
+			),
+
+		Position =
+			UDim2.new(
+				1,
+				-11,
+				0.5,
+				0
+			),
+
+		Size =
+			UDim2.fromOffset(
+				40,
+				21
+			),
+
+		BackgroundColor3 =
+			COLORS.Blue,
+
+		BorderSizePixel = 0,
+	},
+	ESPToggle
+)
+
+corner(ESPSwitch, 15)
+
+local ESPKnob = create(
+	"Frame",
+	{
+		AnchorPoint =
+			Vector2.new(
+				0,
+				0.5
+			),
+
+		Position =
+			UDim2.new(
+				1,
+				-19,
+				0.5,
+				0
+			),
+
+		Size =
+			UDim2.fromOffset(
+				15,
+				15
+			),
+
+		BackgroundColor3 =
+			COLORS.White,
+
+		BorderSizePixel = 0,
+	},
+	ESPSwitch
+)
+
+corner(ESPKnob, 20)
+
+local function updateESPSwitch()
+
+	if ESPEnabled then
+
+		tween(
+			ESPSwitch,
+			{
+				BackgroundColor3 =
+					COLORS.Blue,
+			}
+		)
+
+		tween(
+			ESPKnob,
+			{
+				Position =
+					UDim2.new(
+						1,
+						-19,
+						0.5,
+						0
+					),
+			}
+		)
+
+	else
+
+		tween(
+			ESPSwitch,
+			{
+				BackgroundColor3 =
+					COLORS.RedDark,
+			}
+		)
+
+		tween(
+			ESPKnob,
+			{
+				Position =
+					UDim2.new(
+						0,
+						3,
+						0.5,
+						0
+					),
+			}
+		)
+	end
+end
+
+ESPToggle.MouseButton1Click:Connect(function()
+
+	ESPEnabled =
+		not ESPEnabled
+
+	updateESPSwitch()
+
+	refreshESP()
+end)
+
+updateESPSwitch()
+
+--====================================================--
+-- ESP PLAYER SCROLLING LIST
+--====================================================--
+
+local PlayerList = create(
+	"ScrollingFrame",
+	{
+		Name = "PlayerList",
+
+		Position =
+			UDim2.fromOffset(
+				15,
+				112
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-30,
+				1,
+				-125
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		BackgroundTransparency =
+			0.1,
+
+		BorderSizePixel = 0,
+
+		ScrollBarThickness = 3,
+
+		ScrollBarImageColor3 =
+			COLORS.Blue,
+
+		AutomaticCanvasSize =
+			Enum.AutomaticSize.Y,
+
+		CanvasSize =
+			UDim2.new(
+				0,
+				0,
+				0,
+				0
+			),
+	},
+	ESPPage
+)
+
+corner(PlayerList, 9)
+
+stroke(
+	PlayerList,
+	COLORS.Black,
+	2,
+	0
+)
+
+local PlayerListLayout = create(
+	"UIListLayout",
+	{
+		Padding =
+			UDim.new(
+				0,
+				5
+			),
+
+		SortOrder =
+			Enum.SortOrder.LayoutOrder,
+	},
+	PlayerList
+)
+
+create(
+	"UIPadding",
+	{
+		PaddingTop =
+			UDim.new(
+				0,
+				7
+			),
+
+		PaddingBottom =
+			UDim.new(
+				0,
+				7
+			),
+
+		PaddingLeft =
+			UDim.new(
+				0,
+				7
+			),
+
+		PaddingRight =
+			UDim.new(
+				0,
+				7
+			),
+	},
+	PlayerList
+)
+
+--====================================================--
+-- PLAYER LIST UPDATE
+--====================================================--
+
+local function rebuildPlayerList()
+
+	for _, child in ipairs(
+		PlayerList:GetChildren()
+	) do
+
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	for _, player in ipairs(
+		Players:GetPlayers()
+	) do
+
+		if player ~= LocalPlayer then
+
+			local role =
+				select(
+					1,
+					detectRole(player)
+				)
+
+			local roleColor =
+				getRoleColor(role)
+
+			local item = create(
+				"Frame",
+				{
+					Size =
+						UDim2.new(
+							1,
+							0,
+							0,
+							42
+						),
+
+					BackgroundColor3 =
+						COLORS.Background,
+
+					BorderSizePixel = 0,
+				},
+				PlayerList
+			)
+
+			corner(item, 7)
+
+			local roleBar = create(
+				"Frame",
+				{
+					Position =
+						UDim2.fromOffset(
+							0,
+							0
+						),
+
+					Size =
+						UDim2.new(
+							0,
+							3,
+							1,
+							0
+						),
+
+					BackgroundColor3 =
+						roleColor,
+
+					BorderSizePixel = 0,
+				},
+				item
+			)
+
+			corner(roleBar, 5)
+
+			create(
+				"TextLabel",
+				{
+					BackgroundTransparency = 1,
+
+					Position =
+						UDim2.fromOffset(
+							12,
+							4
+						),
+
+					Size =
+						UDim2.new(
+							0.55,
+							0,
+							0,
+							17
+						),
+
+					Font =
+						Enum.Font.GothamBold,
+
+					Text =
+						player.DisplayName,
+
+					TextSize = 10,
+
+					TextColor3 =
+						COLORS.White,
+
+					TextXAlignment =
+						Enum.TextXAlignment.Left,
+
+					TextTruncate =
+						Enum.TextTruncate.AtEnd,
+				},
+				item
+			)
+
+			create(
+				"TextLabel",
+				{
+					BackgroundTransparency = 1,
+
+					Position =
+						UDim2.fromOffset(
+							12,
+							21
+						),
+
+					Size =
+						UDim2.new(
+							0.55,
+							0,
+							0,
+							14
+						),
+
+					Font =
+						Enum.Font.GothamMedium,
+
+					Text =
+						"@" .. player.Name,
+
+					TextSize = 7,
+
+					TextColor3 =
+						COLORS.Gray,
+
+					TextXAlignment =
+						Enum.TextXAlignment.Left,
+				},
+				item
+			)
+
+			local roleLabel = create(
+				"TextLabel",
+				{
+					AnchorPoint =
+						Vector2.new(
+							1,
+							0.5
+						),
+
+					Position =
+						UDim2.new(
+							1,
+							-10,
+							0.5,
+							0
+						),
+
+					Size =
+						UDim2.fromOffset(
+							82,
+							23
+						),
+
+					BackgroundColor3 =
+						roleColor,
+
+					BackgroundTransparency =
+						0.82,
+
+					Font =
+						Enum.Font.GothamBold,
+
+					Text =
+						role,
+
+					TextSize = 8,
+
+					TextColor3 =
+						roleColor,
+
+					TextXAlignment =
+						Enum.TextXAlignment.Center,
+				},
+				item
+			)
+
+			corner(roleLabel, 6)
+
+			stroke(
+				roleLabel,
+				roleColor,
+				1,
+				0.55
+			)
+		end
+	end
+end
+
+--====================================================--
+-- FARM PAGE
+--====================================================--
+
+local FarmCard = create(
+	"Frame",
+	{
+		Position =
+			UDim2.fromOffset(
+				15,
+				62
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-30,
+				0,
+				62
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		BorderSizePixel = 0,
+	},
+	FarmPage
+)
+
+corner(FarmCard, 8)
+
+stroke(
+	FarmCard,
+	COLORS.Black,
+	2,
+	0
+)
+
+create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				12,
+				8
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-90,
+				0,
+				18
+			),
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			"AUTO PICK GUN",
+
+		TextSize = 10,
+
+		TextColor3 =
+			COLORS.White,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	FarmCard
+)
+
+create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				12,
+				27
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-90,
+				0,
+				20
+			),
+
+		Font =
+			Enum.Font.GothamMedium,
+
+		Text =
+			"Uses the game's normal pickup system",
+
+		TextSize = 8,
+
+		TextColor3 =
+			COLORS.Gray,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	FarmCard
+)
+
+local FarmStatus = create(
+	"TextLabel",
+	{
+		AnchorPoint =
+			Vector2.new(
+				1,
+				0.5
+			),
+
+		Position =
+			UDim2.new(
+				1,
+				-12,
+				0.5,
+				0
+			),
+
+		Size =
+			UDim2.fromOffset(
+				70,
+				24
+			),
+
+		BackgroundColor3 =
+			COLORS.RedDark,
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			"OFF",
+
+		TextSize = 8,
+
+		TextColor3 =
+			COLORS.White,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Center,
+	},
+	FarmCard
+)
+
+corner(FarmStatus, 6)
+
+FarmCard.InputBegan:Connect(function(input)
+
+	if input.UserInputType ==
+		Enum.UserInputType.MouseButton1
+		or input.UserInputType ==
+		Enum.UserInputType.Touch then
+
+		FarmStatus.Text =
+			FarmStatus.Text == "OFF"
+			and "ON"
+			or "OFF"
+
+		if FarmStatus.Text == "ON" then
+
+			FarmStatus.BackgroundColor3 =
+				COLORS.Blue
+
+		else
+
+			FarmStatus.BackgroundColor3 =
+				COLORS.RedDark
+
+		end
+	end
+end)
+
+--====================================================--
+-- UPDATES PAGE
+--====================================================--
+
+local UpdateVersionButton = create(
+	"TextButton",
+	{
+		Position =
+			UDim2.fromOffset(
+				15,
+				62
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-30,
+				0,
+				47
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		BorderSizePixel = 0,
+
+		AutoButtonColor = false,
+
+		Text = "",
+	},
+	UpdatesPage
+)
+
+corner(UpdateVersionButton, 8)
+
+stroke(
+	UpdateVersionButton,
+	COLORS.Black,
+	2,
+	0
+)
+
+gradient(
+	UpdateVersionButton,
+	Color3.fromRGB(24, 31, 48),
+	Color3.fromRGB(14, 17, 26),
+	0
+)
+
+create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				12,
+				5
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-55,
+				0,
+				18
+			),
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			"UPDATE VERSION  " .. VERSION,
+
+		TextSize = 10,
+
+		TextColor3 =
+			COLORS.White,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	UpdateVersionButton
+)
+
+create(
+	"TextLabel",
+	{
+		BackgroundTransparency = 1,
+
+		Position =
+			UDim2.fromOffset(
+				12,
+				23
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-55,
+				0,
+				15
+			),
+
+		Font =
+			Enum.Font.GothamMedium,
+
+		Text =
+			"Open version history",
+
+		TextSize = 8,
+
+		TextColor3 =
+			COLORS.Gray,
+
+		TextXAlignment =
+			Enum.TextXAlignment.Left,
+	},
+	UpdateVersionButton
+)
+
+local UpdateArrow = create(
+	"TextLabel",
+	{
+		AnchorPoint =
+			Vector2.new(
+				1,
+				0.5
+			),
+
+		Position =
+			UDim2.new(
+				1,
+				-12,
+				0.5,
+				0
+			),
+
+		Size =
+			UDim2.fromOffset(
+				20,
+				20
+			),
+
+		BackgroundTransparency = 1,
+
+		Font =
+			Enum.Font.GothamBold,
+
+		Text =
+			"▼",
+
+		TextSize = 12,
+
+		TextColor3 =
+			COLORS.Blue,
+	},
+	UpdateVersionButton
+)
+
+--====================================================--
+-- UPDATE SCROLLING FRAME
+--====================================================--
+
+local UpdateFrame = create(
+	"Frame",
+	{
+		Position =
+			UDim2.fromOffset(
+				15,
+				117
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-30,
+				0,
+				0
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel2,
+
+		BorderSizePixel = 0,
+
+		ClipsDescendants = true,
+	},
+	UpdatesPage
+)
+
+corner(UpdateFrame, 9)
+
+stroke(
+	UpdateFrame,
+	COLORS.Black,
+	2,
+	0
+)
+
+local UpdateScroll = create(
+	"ScrollingFrame",
+	{
+		Position =
+			UDim2.fromOffset(
+				7,
+				7
+			),
+
+		Size =
+			UDim2.new(
+				1,
+				-14,
+				1,
+				-14
+			),
+
+		BackgroundTransparency = 1,
+
+		BorderSizePixel = 0,
+
+		ScrollBarThickness = 3,
+
+		ScrollBarImageColor3 =
+			COLORS.Blue,
+
+		AutomaticCanvasSize =
+			Enum.AutomaticSize.Y,
+
+		CanvasSize =
+			UDim2.new(
+				0,
+				0,
+				0,
+				0
+			),
+	},
+	UpdateFrame
+)
+
+local UpdateLayout = create(
+	"UIListLayout",
+	{
+		Padding =
+			UDim.new(
+				0,
+				7
+			),
+
+		SortOrder =
+			Enum.SortOrder.LayoutOrder,
+	},
+	UpdateScroll
+)
+
+create(
+	"UIPadding",
+	{
+		PaddingTop =
+			UDim.new(
+				0,
+				3
+			),
+
+		PaddingBottom =
+			UDim.new(
+				0,
+				5
+			),
+	},
+	UpdateScroll
+)
+
+local function makeUpdateVersion(versionData)
+
+	local versionCard = create(
+		"Frame",
+		{
+			Size =
+				UDim2.new(
+					1,
+					-3,
+					0,
+					38
+				),
+
+			BackgroundColor3 =
+				COLORS.Background,
+
+			BorderSizePixel = 0,
+		},
+		UpdateScroll
+	)
+
+	corner(versionCard, 7)
+
+	stroke(
+		versionCard,
+		COLORS.Black,
+		1,
+		0
+	)
+
+	local versionLabel = create(
+		"TextLabel",
+		{
+			Position =
+				UDim2.fromOffset(
+					9,
+					6
+				),
+
+			Size =
+				UDim2.fromOffset(
+					45,
+					25
+				),
+
+			BackgroundColor3 =
+				COLORS.BlueDark,
+
+			Font =
+				Enum.Font.GothamBold,
+
+			Text =
+				versionData.Version,
+
+			TextSize = 9,
+
+			TextColor3 =
+				COLORS.White,
+
+			TextXAlignment =
+				Enum.TextXAlignment.Center,
+
+			TextYAlignment =
+				Enum.TextYAlignment.Center,
+		},
+		versionCard
+	)
+
+	corner(versionLabel, 5)
+
+	local countLabel = create(
+		"TextLabel",
+		{
+			BackgroundTransparency = 1,
+
+			Position =
+				UDim2.fromOffset(
+					64,
+					5
+				),
+
+			Size =
+				UDim2.new(
+					1,
+					-72,
+					0,
+					27
+				),
+
+			Font =
+				Enum.Font.GothamBold,
+
+			Text =
+				"Version update",
+
+			TextSize = 9,
+
+			TextColor3 =
+				COLORS.White,
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+		},
+		versionCard
+	)
+
+	local details = create(
+		"Frame",
+		{
+			Size =
+				UDim2.new(
+					1,
+					-3,
+					0,
+					0
+				),
+
+			BackgroundColor3 =
+				COLORS.Panel3,
+
+			BorderSizePixel = 0,
+
+			ClipsDescendants = true,
+		},
+		UpdateScroll
+	)
+
+	corner(details, 7)
+
+	stroke(
+		details,
+		COLORS.Black,
+		1,
+		0
+	)
+
+	local layout = create(
+		"UIListLayout",
+		{
+			Padding =
+				UDim.new(
+					0,
+					5
+				),
+
+			SortOrder =
+				Enum.SortOrder.LayoutOrder,
+		},
+		details
+	)
+
+	local padding = create(
+		"UIPadding",
+		{
+			PaddingTop =
+				UDim.new(
+					0,
+					7
+				),
+
+			PaddingBottom =
+				UDim.new(
+					0,
+					7
+				),
+
+			PaddingLeft =
+				UDim.new(
+					0,
+					7
+				),
+
+			PaddingRight =
+				UDim.new(
+					0,
+					7
+				),
+		},
+		details
+	)
+
+	for _, item in ipairs(
+		versionData.Items
+	) do
+
+		local typeText =
+			item[1]
+
+		local message =
+			item[2]
+
+		local typeColor =
+			typeText == "FIX"
+			and COLORS.Red
+			or COLORS.Blue
+
+		local row = create(
+			"Frame",
+			{
+				Size =
+					UDim2.new(
+						1,
+						0,
+						0,
+						34
+					),
+
+				BackgroundColor3 =
+					COLORS.Background,
+
+				BorderSizePixel = 0,
+			},
+			details
+		)
+
+		corner(row, 6)
+
+		local badge = create(
+			"TextLabel",
+			{
+				Position =
+					UDim2.fromOffset(
+						6,
+						6
+					),
+
+				Size =
+					UDim2.fromOffset(
+						48,
+						22
+					),
+
+				BackgroundColor3 =
+					typeColor,
+
+				BackgroundTransparency =
+					0.1,
+
+				Font =
+					Enum.Font.GothamBold,
+
+				Text =
+					typeText,
+
+				TextSize = 7,
+
+				TextColor3 =
+					COLORS.White,
+
+				TextXAlignment =
+					Enum.TextXAlignment.Center,
+			},
+			row
+		)
+
+		corner(badge, 5)
+
+		create(
+			"TextLabel",
+			{
+				BackgroundTransparency = 1,
+
+				Position =
+					UDim2.fromOffset(
+						63,
+						4
+					),
+
+				Size =
+					UDim2.new(
+						1,
+						-70,
+						1,
+						-8
+					),
+
+				Font =
+					Enum.Font.GothamSemibold,
+
+				Text =
+					message,
+
+				TextSize = 8,
+
+				TextColor3 =
+					COLORS.Light,
+
+				TextXAlignment =
+					Enum.TextXAlignment.Left,
+
+				TextYAlignment =
+					Enum.TextYAlignment.Center,
+
+				TextWrapped = true,
+			},
+			row
+		)
+	end
+
+	local expandedHeight =
+		45 + (#versionData.Items * 39)
+
+	versionCard.InputBegan:Connect(function(input)
+
+		if input.UserInputType ==
+			Enum.UserInputType.MouseButton1
+			or input.UserInputType ==
+			Enum.UserInputType.Touch then
+
+			local isOpen =
+				details.Size.Y.Offset > 0
+
+			if isOpen then
+
+				tween(
+					details,
+					{
+						Size =
+							UDim2.new(
+								1,
+								-3,
+								0,
+								0
+							),
+					},
+					0.2
+				)
+
+			else
+
+				tween(
+					details,
+					{
+						Size =
+							UDim2.new(
+								1,
+								-3,
+								0,
+								expandedHeight
+							),
+					},
+					0.25
+				)
+			end
+		end
+	end)
+end
+
+for _, versionData in ipairs(UpdateHistory) do
+	makeUpdateVersion(versionData)
+end
+
+--====================================================--
+-- UPDATE MAIN BUTTON
+--====================================================--
+
+local UpdatesOpen = false
+
+UpdateVersionButton.MouseButton1Click:Connect(function()
+
+	UpdatesOpen =
+		not UpdatesOpen
+
+	if UpdatesOpen then
+
+		tween(
+			UpdateFrame,
+			{
+				Size =
+					UDim2.new(
+						1,
+						-30,
+						1,
+						-130
+					),
+			},
+			0.25
+		)
+
+		tween(
+			UpdateArrow,
+			{
+				Rotation = 180,
+			},
+			0.2
+		)
+
+	else
+
+		tween(
+			UpdateFrame,
+			{
+				Size =
+					UDim2.new(
+						1,
+						-30,
+						0,
+						0
+					),
+			},
+			0.2
+		)
+
+		tween(
+			UpdateArrow,
+			{
+				Rotation = 0,
+			},
+			0.2
+		)
+	end
+end)
+
+--====================================================--
+-- TAB SWITCHING
+--====================================================--
+
+local function setTab(tab)
+
+	ActiveTab = tab
+
+	ESPPage.Visible =
+		tab == "ESP"
+
+	FarmPage.Visible =
+		tab == "FARM"
+
+	UpdatesPage.Visible =
+		tab == "UPDATES"
+
+	local buttons = {
+		ESP = ESPTab,
+		FARM = FarmTab,
+		UPDATES = UpdatesTab,
+	}
+
+	for name, button in pairs(buttons) do
+
+		if name == tab then
+
+			tween(
+				button,
+				{
+					BackgroundColor3 =
+						COLORS.BlueDark,
+
+					TextColor3 =
+						COLORS.White,
+				},
+				0.15
+			)
+
+		else
+
+			tween(
+				button,
+				{
+					BackgroundColor3 =
+						COLORS.Panel2,
+
+					TextColor3 =
+						COLORS.Light,
+				},
+				0.15
+			)
+		end
+	end
+
+	if tab == "ESP" then
+		rebuildPlayerList()
+	end
+end
+
+ESPTab.MouseButton1Click:Connect(function()
+	setTab("ESP")
+end)
+
+FarmTab.MouseButton1Click:Connect(function()
+	setTab("FARM")
+end)
+
+UpdatesTab.MouseButton1Click:Connect(function()
+	setTab("UPDATES")
+end)
+
+setTab("ESP")
+
+--====================================================--
+-- CLOSE BUTTON
+--====================================================--
+
+CloseButton.MouseButton1Click:Connect(function()
+
+	MainOpen = false
+
+	tween(
+		MainFrame,
+		{
+			Position =
+				UDim2.fromScale(
+					0.5,
+					0.53
+				),
+		},
+		0.18
+	)
+
+	task.delay(
+		0.18,
+		function()
+
+			if not MainOpen then
+				MainFrame.Visible = false
+			end
+
+		end
+	)
+end)
+
+--====================================================--
+-- TOGGLE BUTTON
+--====================================================--
+
+local ToggleButton = create(
+	"ImageButton",
+	{
+		Name =
+			"KYZEN_TOGGLE",
+
+		AnchorPoint =
+			Vector2.new(
+				0,
+				0.5
+			),
+
+		Position =
+			UDim2.new(
+				0,
+				18,
+				0.5,
+				0
+			),
+
+		Size =
+			UDim2.fromOffset(
+				CONFIG.TOGGLE_SIZE,
+				CONFIG.TOGGLE_SIZE
+			),
+
+		BackgroundColor3 =
+			COLORS.Panel,
+
+		BorderSizePixel = 0,
+
+		Image =
+			"rbxassetid://129427980084843",
+
+		AutoButtonColor = false,
+	},
+	ScreenGui
+)
+
+corner(ToggleButton, 100)
+
+stroke(
+	ToggleButton,
+	COLORS.Blue,
+	2,
+	0
+)
+
+ToggleButton.MouseButton1Click:Connect(function()
+
+	MainOpen =
+		not MainOpen
+
+	if MainOpen then
+
+		MainFrame.Visible = true
+
+		MainFrame.Position =
+			UDim2.fromScale(
+				0.5,
+				0.53
+			)
+
+		tween(
+			MainFrame,
+			{
+				Position =
+					UDim2.fromScale(
+						0.5,
+						0.5
+					),
+			},
+			0.22
+		)
+
+	else
+
+		tween(
+			MainFrame,
+			{
+				Position =
+					UDim2.fromScale(
+						0.5,
+						0.53
+					),
+			},
+			0.18
+		)
+
+		task.delay(
+			0.18,
+			function()
+
+				if not MainOpen then
+					MainFrame.Visible = false
+				end
+
+			end
+		)
+	end
+end)
+
+--====================================================--
+-- DRAG
+--====================================================--
+
+local function makeDraggable(object)
+
+	local dragging = false
+
+	local dragStart
+
+	local startPosition
+
+	object.InputBegan:Connect(function(input)
+
+		if input.UserInputType ==
+			Enum.UserInputType.MouseButton1
+			or input.UserInputType ==
+			Enum.UserInputType.Touch then
+
+			dragging = true
+
+			dragStart =
+				input.Position
+
+			startPosition =
+				object.Position
+
+			input.Changed:Connect(function()
+
+				if input.UserInputState ==
+					Enum.UserInputState.End then
+
+					dragging = false
+				end
+
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+
+		if not dragging then
+			return
+		end
+
+		if input.UserInputType ==
+			Enum.UserInputType.MouseMovement
+			or input.UserInputType ==
+			Enum.UserInputType.Touch then
+
+			local delta =
+				input.Position
+				- dragStart
+
+			object.Position =
+				UDim2.new(
+					startPosition.X.Scale,
+					startPosition.X.Offset
+						+ delta.X,
+
+					startPosition.Y.Scale,
+					startPosition.Y.Offset
+						+ delta.Y
+				)
+		end
+	end)
+end
+
+makeDraggable(MainFrame)
+
+makeDraggable(ToggleButton)
+
+--====================================================--
+-- PLAYER EVENTS
+--====================================================--
+
+local function setupCharacter(player, character)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	local humanoid =
+		character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if humanoid then
+
+		humanoid.Died:Connect(function()
+
+			local oldRole =
+				PlayerRoles[player.UserId]
+
+			if oldRole == "Sheriff"
+				or oldRole == "Hero" then
+
+				local root =
+					getRoot(player)
+
+				if root then
+					LastGunDropCFrame =
+						root.CFrame
+				end
+
+				LastGunHolderUserId =
+					player.UserId
+			end
+
+			clearESP(player)
+
+		end)
+	end
+
+	task.wait(0.1)
+
+	updateESP(player)
+end
+
+Players.PlayerAdded:Connect(function(player)
+
+	player.CharacterAdded:Connect(function(character)
+
+		setupCharacter(
+			player,
+			character
+		)
+	end)
+
+	for _, attributeName in ipairs(
+		ROLE_ATTRIBUTES
+	) do
+
+		player:GetAttributeChangedSignal(
+			attributeName
+		):Connect(function()
+
+			task.defer(function()
+
+				updateESP(player)
+
+				if ActiveTab == "ESP" then
+					rebuildPlayerList()
+				end
+
+			end)
+		end)
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+
+	local oldRole =
+		PlayerRoles[player.UserId]
+
+	if oldRole == "Sheriff"
+		or oldRole == "Hero" then
+
+		local root =
+			getRoot(player)
+
+		if root then
+			LastGunDropCFrame =
+				root.CFrame
+		end
+
+		LastGunHolderUserId =
+			player.UserId
+	end
+
+	clearESP(player)
+
+	PlayerRoles[player.UserId] = nil
+end)
+
+for _, player in ipairs(
+	Players:GetPlayers()
+) do
+
+	if player ~= LocalPlayer then
+
+		if player.Character then
+			setupCharacter(
+				player,
+				player.Character
+			)
+		end
+
+		player.CharacterAdded:Connect(
+			function(character)
+
+				setupCharacter(
+					player,
+					character
+				)
+
+			end
+		)
+
+		for _, attributeName in ipairs(
+			ROLE_ATTRIBUTES
+		) do
+
+			player:GetAttributeChangedSignal(
+				attributeName
+			):Connect(function()
+
+				task.defer(function()
+
+					updateESP(player)
+
+					if ActiveTab == "ESP" then
+						rebuildPlayerList()
+					end
+
+				end)
+
+			end)
+		end
+	end
+end
+
+--====================================================--
+-- ROUND ATTRIBUTE LISTENERS
+--====================================================--
+
+local function watchRoundAttributes(root)
+
+	for _, attributeName in ipairs(
+		ROUND_ATTRIBUTES
+	) do
+
+		root:GetAttributeChangedSignal(
+			attributeName
+		):Connect(function()
+
+			task.defer(checkRound)
+
+		end)
+	end
+end
+
+watchRoundAttributes(Workspace)
+
+watchRoundAttributes(ReplicatedStorage)
+
+--====================================================--
+-- MAIN LOOP
+--====================================================--
+
+task.spawn(function()
+
+	while ScreenGui.Parent do
+
+		-- Detect round first.
+		checkRound()
+
+		-- Re-scan roles every second.
+		refreshESP()
+
+		-- Refresh scrolling player list.
+		if ActiveTab == "ESP" then
+			rebuildPlayerList()
+		end
+
+		task.wait(
+			CONFIG.ESP_REFRESH
+		)
+	end
+end)
+
+--====================================================--
+-- PRE-ROUND ROLE DETECTION
+--====================================================--
+
+task.spawn(function()
+
+	while ScreenGui.Parent do
+
+		-- This deliberately runs even before
+		-- the round starts so replicated role
+		-- attributes can appear immediately.
+
+		for _, player in ipairs(
+			Players:GetPlayers()
+		) do
+
+			if player ~= LocalPlayer then
+
+				local role =
+					select(
+						1,
+						detectRole(player)
+					)
+
+				PlayerRoles[player.UserId] =
+					role
+			end
+		end
+
+		if ActiveTab == "ESP" then
+			rebuildPlayerList()
+		end
+
+		task.wait(0.5)
+	end
+end)
+
+--====================================================--
+-- INITIAL
+--====================================================--
+
+updateESPSwitch()
+
+refreshESP()
+
+rebuildPlayerList()
+
+print(
+	"[KYZEN PERKS] "
+	.. VERSION
+	.. " loaded."
+)
+
+print(
+	"[KYZEN PERKS] Role system + round reset active."
+)
+
+--====================================================--
+-- END V11
+--====================================================--
